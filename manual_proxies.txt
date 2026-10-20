@@ -1,0 +1,290 @@
+# manual_proxies.txt
+# ============================================================
+# SECTION 1: WORKING RESIDENTIAL PROXIES
+# Priority for Adsterra (Real Residential IP)
+# ============================================================
+
+# ---------- Oxylabs Residential (Portugal MEO) ----------
+# ✅ VERIFIED WORKING - AS3243 MEO (Portugal Residential)
+http://resi_cef75b58:4QDHq41b=GGc@pr.oxylabs.io:7777
+
+# ============================================================
+# SECTION 2: PROXYSCRAPE DATACENTER (Fallback)
+# Not residential - ads may not show
+# ============================================================
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.167.19.221:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.52.161:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.52.160:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.47.172:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.224.78:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.36.83:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.225.147:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@65.111.24.137:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@151.123.176.216:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@65.111.11.206:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.32.182:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.242.177:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.46.185:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.246.61:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@209.50.168.161:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.233.149:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.33.127:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@209.50.181.4:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@65.111.7.71:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.43.72:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.244.200:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@209.50.176.87:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.244.196:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.244.118:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.251.137:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@193.56.28.85:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.167.19.157:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.52.126:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.35.187:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@209.50.179.53:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.46.74:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.247.230:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@209.50.175.57:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.55.193:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.38.231:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.40.115:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.230.244:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.48.40:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.36.210:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@195.63.31.138:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@65.111.23.247:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@209.50.166.253:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.241.201:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@65.111.9.69:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.61.93:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.43.91:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@209.50.162.231:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@65.111.21.148:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.231.73:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.62.48:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.48.69:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@65.111.29.20:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.44.148:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.244.136:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.52.216:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.243.126:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@209.50.175.178:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.51.56:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@151.123.178.126:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.54.118:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.37.195:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.45.46:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.234.30:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.41.185:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.45.124:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.35.59:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@209.50.183.106:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.41.30:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.38.171:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.56.132:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.226.250:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.44.121:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@217.181.92.100:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.231.60:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.228.61:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@209.50.180.215:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@209.50.164.196:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.167.19.247:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@209.50.182.106:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.41.36:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@65.111.31.231:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.33.140:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@65.111.25.158:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.62.66:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.43.237:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@209.50.177.49:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.62.184:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.40.224:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.47.222:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.228.34:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.61.47:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.248.177:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.244.227:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.248.239:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.50.13:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@209.50.174.155:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@209.50.183.107:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.33.71:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.37.197:3129
+http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.240.214:3129
+
+# ============================================================
+# SECTION 3: WEBSHARE (Datacenter - Last Resort)
+# Format: ip:port:user:pass
+# ============================================================
+
+# Account 1
+45.38.107.97:6014:uisdhfubfi1:kfbviudsf1
+64.137.96.74:6641:uisdhfubfi1:kfbviudsf1
+198.23.243.226:6361:uisdhfubfi1:kfbviudsf1
+38.154.185.97:6370:uisdhfubfi1:kfbviudsf1
+84.247.60.125:6095:uisdhfubfi1:kfbviudsf1
+191.96.254.138:6185:uisdhfubfi1:kfbviudsf1
+198.46.161.42:5092:uisdhfubfi1:kfbviudsf1
+64.137.10.153:5803:uisdhfubfi1:kfbviudsf1
+104.164.49.38:7693:uisdhfubfi1:kfbviudsf1
+23.26.71.145:5628:uisdhfubfi1:kfbviudsf1
+
+# Account 2
+45.38.107.97:6014:vorkmjus:s4teh5urbicc
+64.137.96.74:6641:vorkmjus:s4teh5urbicc
+198.23.243.226:6361:vorkmjus:s4teh5urbicc
+38.154.185.97:6370:vorkmjus:s4teh5urbicc
+84.247.60.125:6095:vorkmjus:s4teh5urbicc
+191.96.254.138:6185:vorkmjus:s4teh5urbicc
+198.46.161.42:5092:vorkmjus:s4teh5urbicc
+64.137.10.153:5803:vorkmjus:s4teh5urbicc
+104.164.49.38:7693:vorkmjus:s4teh5urbicc
+23.26.71.145:5628:vorkmjus:s4teh5urbicc
+
+# Account 3
+45.38.107.97:6014:bqsmskmg:6vbv8oh72xva
+64.137.96.74:6641:bqsmskmg:6vbv8oh72xva
+198.23.243.226:6361:bqsmskmg:6vbv8oh72xva
+38.154.185.97:6370:bqsmskmg:6vbv8oh72xva
+84.247.60.125:6095:bqsmskmg:6vbv8oh72xva
+191.96.254.138:6185:bqsmskmg:6vbv8oh72xva
+198.46.161.42:5092:bqsmskmg:6vbv8oh72xva
+64.137.10.153:5803:bqsmskmg:6vbv8oh72xva
+104.164.49.38:7693:bqsmskmg:6vbv8oh72xva
+23.26.71.145:5628:bqsmskmg:6vbv8oh72xva
+
+# Account 4
+45.38.107.97:6014:cnpykfrm:7q4eolqcmjcr
+64.137.96.74:6641:cnpykfrm:7q4eolqcmjcr
+198.23.243.226:6361:cnpykfrm:7q4eolqcmjcr
+38.154.185.97:6370:cnpykfrm:7q4eolqcmjcr
+84.247.60.125:6095:cnpykfrm:7q4eolqcmjcr
+191.96.254.138:6185:cnpykfrm:7q4eolqcmjcr
+198.46.161.42:5092:cnpykfrm:7q4eolqcmjcr
+64.137.10.153:5803:cnpykfrm:7q4eolqcmjcr
+104.164.49.38:7693:cnpykfrm:7q4eolqcmjcr
+23.26.71.145:5628:cnpykfrm:7q4eolqcmjcr
+
+# Account 5
+45.38.107.97:6014:lmtnlhlf:wtcvpwv7anbw
+64.137.96.74:6641:lmtnlhlf:wtcvpwv7anbw
+198.23.243.226:6361:lmtnlhlf:wtcvpwv7anbw
+38.154.185.97:6370:lmtnlhlf:wtcvpwv7anbw
+84.247.60.125:6095:lmtnlhlf:wtcvpwv7anbw
+191.96.254.138:6185:lmtnlhlf:wtcvpwv7anbw
+198.46.161.42:5092:lmtnlhlf:wtcvpwv7anbw
+64.137.10.153:5803:lmtnlhlf:wtcvpwv7anbw
+104.164.49.38:7693:lmtnlhlf:wtcvpwv7anbw
+23.26.71.145:5628:lmtnlhlf:wtcvpwv7anbw
+
+# Account 6
+45.38.107.97:6014:uworlpex:r7m6742z1t6q
+64.137.96.74:6641:uworlpex:r7m6742z1t6q
+198.23.243.226:6361:uworlpex:r7m6742z1t6q
+38.154.185.97:6370:uworlpex:r7m6742z1t6q
+84.247.60.125:6095:uworlpex:r7m6742z1t6q
+191.96.254.138:6185:uworlpex:r7m6742z1t6q
+198.46.161.42:5092:uworlpex:r7m6742z1t6q
+64.137.10.153:5803:uworlpex:r7m6742z1t6q
+104.164.49.38:7693:uworlpex:r7m6742z1t6q
+23.26.71.145:5628:uworlpex:r7m6742z1t6q
+
+# Account 7
+45.38.107.97:6014:pklujdep:850ykjxpy8bf
+64.137.96.74:6641:pklujdep:850ykjxpy8bf
+198.23.243.226:6361:pklujdep:850ykjxpy8bf
+38.154.185.97:6370:pklujdep:850ykjxpy8bf
+84.247.60.125:6095:pklujdep:850ykjxpy8bf
+191.96.254.138:6185:pklujdep:850ykjxpy8bf
+198.46.161.42:5092:pklujdep:850ykjxpy8bf
+64.137.10.153:5803:pklujdep:850ykjxpy8bf
+104.164.49.38:7693:pklujdep:850ykjxpy8bf
+23.26.71.145:5628:pklujdep:850ykjxpy8bf
+
+# Account 8
+45.38.107.97:6014:vmocxrrw:84gq1juaq0lf
+64.137.96.74:6641:vmocxrrw:84gq1juaq0lf
+198.23.243.226:6361:vmocxrrw:84gq1juaq0lf
+38.154.185.97:6370:vmocxrrw:84gq1juaq0lf
+84.247.60.125:6095:vmocxrrw:84gq1juaq0lf
+191.96.254.138:6185:vmocxrrw:84gq1juaq0lf
+198.46.161.42:5092:vmocxrrw:84gq1juaq0lf
+64.137.10.153:5803:vmocxrrw:84gq1juaq0lf
+104.164.49.38:7693:vmocxrrw:84gq1juaq0lf
+23.26.71.145:5628:vmocxrrw:84gq1juaq0lf
+
+# Account 9
+31.59.20.176:6754:fkiuefmd:efyq385p8zvw
+45.38.107.97:6014:fkiuefmd:efyq385p8zvw
+64.137.96.74:6641:fkiuefmd:efyq385p8zvw
+198.23.243.226:6361:fkiuefmd:efyq385p8zvw
+38.154.185.97:6370:fkiuefmd:efyq385p8zvw
+84.247.60.125:6095:fkiuefmd:efyq385p8zvw
+142.111.67.146:5611:fkiuefmd:efyq385p8zvw
+191.96.254.138:6185:fkiuefmd:efyq385p8zvw
+31.58.9.4:6077:fkiuefmd:efyq385p8zvw
+198.46.161.42:5092:fkiuefmd:efyq385p8zvw
+
+# Account 10
+31.59.20.176:6754:dqagenat:iai2pf3xd2vs
+45.38.107.97:6014:dqagenat:iai2pf3xd2vs
+64.137.96.74:6641:dqagenat:iai2pf3xd2vs
+198.23.243.226:6361:dqagenat:iai2pf3xd2vs
+38.154.185.97:6370:dqagenat:iai2pf3xd2vs
+84.247.60.125:6095:dqagenat:iai2pf3xd2vs
+142.111.67.146:5611:dqagenat:iai2pf3xd2vs
+191.96.254.138:6185:dqagenat:iai2pf3xd2vs
+31.58.9.4:6077:dqagenat:iai2pf3xd2vs
+198.46.161.42:5092:dqagenat:iai2pf3xd2vs
+
+# ============================================================
+# SECTION 4: SOCKS5 (Free - Last Fallback)
+# ============================================================
+5.255.103.55:1080
+5.255.123.162:1080
+101.36.104.239:10808
+65.21.252.66:10801
+121.169.46.116:1090
+220.158.232.118:1080
+144.24.111.128:1088
+101.36.104.46:10808
+67.207.92.87:1088
+213.199.47.140:1080
+5.255.117.127:1080
+123.58.219.171:10808
+119.148.7.10:22122
+47.245.165.201:1080
+49.13.22.249:10801
+65.21.252.66:10811
+5.255.99.75:1080
+85.209.156.148:1080
+5.75.133.113:10811
+45.84.13.153:1080
+103.103.146.149:7080
+59.152.97.233:1080
+202.62.52.120:1080
+27.131.14.9:1088
+203.76.123.6:1080
+115.127.53.114:1080
+119.148.20.109:22122
+110.76.144.112:1080
+103.174.122.197:8199
+46.17.43.219:7890
+81.177.175.251:1080
+202.91.41.102:1080
+103.136.107.70:1080
+130.255.94.32:5080
+85.117.248.36:1080
+103.239.201.50:58765
+203.189.152.79:1080
+107.173.230.93:40000
+45.179.145.12:6080
+202.62.42.167:1080
+65.21.252.66:10808
+185.133.239.244:32784
+84.54.217.219:1080
+37.204.230.182:1080
+102.0.14.42:1080
+177.52.25.34:1080
+103.118.85.144:1080
