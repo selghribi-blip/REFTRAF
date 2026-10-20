@@ -97,7 +97,7 @@ def update_github_secret(secret_name, encrypted_value, key_id):
     r = requests.put(url, headers=headers, json=payload, timeout=15)
     if r.status_code in (201, 204):
         return True
-    print(f"❌ فشل الرفع: {r.status_code} — {r.text}")
+    print(f"❌ فشل الرفع: {r.status_code} — تحقق من صلاحيات التوكن وصيغة الطلب")
     return False
 
 
@@ -112,7 +112,7 @@ def main():
 
     # 1) توليد كلمة مرور
     proxy_pass = generate_password()
-    print(f"🔑 كلمة المرور الجديدة: {proxy_pass}")
+    print("🔑 تم توليد كلمة مرور جديدة للمستخدم")
 
     # 2) إعداد VPS (اختياري — علّق إذا أردت استخدام بيانات موجودة)
     if os.environ.get('SETUP_VPS', 'false').lower() == 'true':
@@ -121,7 +121,7 @@ def main():
 
     # 3) بناء سلسلة البروكسي
     proxy_string = f"socks5h://{PROXY_USER}:{proxy_pass}@{VPS_IP}:{PROXY_PORT}"
-    print(f"🌐 البروكسي: {proxy_string}")
+    print(f"🌐 تم تجهيز سلسلة البروكسي للمضيف {VPS_IP}:{PROXY_PORT}")
 
     # 4) تشفير ورفع
     print("🔐 جلب المفتاح العام من GitHub...")
