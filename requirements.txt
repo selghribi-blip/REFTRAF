@@ -1,13 +1,29 @@
+# ===== Core Scrapy =====
 scrapy>=2.11.0,<2.13.0
 Twisted==25.5.0
 w3lib==2.3.1
 PySocks>=1.7.1
-pymongo>=4.6.0
-selenium>=4.18.0
-undetected-chromedriver>=3.5.0
-requests[socks]>=2.31.0
-python-dotenv>=1.0.0
-browserstack-local>=1.0.0
 lxml>=4.9.0
 cssselect>=1.2.0
 itemadapter>=0.8.0
+
+# ===== MongoDB =====
+pymongo>=4.8.0
+
+# ===== Browser Automation =====
+selenium>=4.19.0
+undetected-chromedriver>=3.5.5
+browserstack-local>=1.0.0
+
+# ===== Networking / Env =====
+requests[socks]>=2.32.0
+python-dotenv>=1.0.1
+
+# ===== Export (scripts/export_mongo.py) =====
+pandas>=2.2.0
+openpyxl>=3.1.0
+
+# ===== Optional: Zyte API integration =====
+# Uncomment ONLY if you set ZYTE_API_KEY and want ZyteMiddleware to actually render JS.
+# Must stay compatible with Scrapy 2.11/2.12.
+# scrapy-zyte-api>=0.28.0,<0.31.0
