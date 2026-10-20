@@ -84,7 +84,7 @@ jobs:
           retention-days: 3
 
   # ============================================================
-  # 2) LOCAL CHROME
+  # 2) LOCAL CHROME (with MV3 proxy auth)
   # ============================================================
   run-local-browser-spider:
     name: Local #${{ matrix.attempt }}
@@ -164,6 +164,7 @@ jobs:
           TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
           CHROME_BIN: '/usr/bin/google-chrome'
           CHROMEDRIVER_PATH: '/usr/local/bin/chromedriver'
+          # ✅ KEEP THIS AS 'true' — MV3 extension makes it work
           USE_PROXY_WITH_BROWSER: 'true'
           PROXY_HEALTHCHECK: 'true'
           MANUAL_PROXY_FILE: 'manual_proxies.txt'
