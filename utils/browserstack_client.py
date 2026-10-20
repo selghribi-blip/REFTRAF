@@ -1,5 +1,7 @@
 # utils/browserstack_client.py
-# BrowserStack + Local Chrome with auto Chrome version detection
+# BrowserStack + Local Chrome with auto Chrome version detection,
+# real proxy verification, anti-detection, and mobile emulation.
+# ==========================================================================
 import os
 import re
 import time
@@ -9,6 +11,8 @@ import logging
 import tempfile
 import zipfile
 import subprocess
+
+import requests
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -25,6 +29,17 @@ from selenium.common.exceptions import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# Constants — detection keywords for CI bypass
+# ============================================================
+# أي من هذه الكلمات في ISP/Org يعني أن الاتصال مباشر من GitHub runner
+# (وليس من البروكسي). عند اكتشافها، نوقف الجلسة فوراً لتوفير حصة Actions.
+AZURE_DATACENTER_KEYWORDS = (
+    'azure', 'microsoft', 'cloudapp', 'github',
+    'amazon', 'aws', 'google cloud', 'digitalocean',
+)
 
 
 # ============================================================
@@ -94,7 +109,7 @@ def detect_chrome_version():
         '/opt/google/chrome/chrome',
     ]
     for chrome_bin in candidates:
-        if not os.path.exists(chrome_bin):
+        if not chrome_bin or not os.path.exists(chrome_bin):
             continue
         try:
             result = subprocess.run(
@@ -116,7 +131,7 @@ def detect_chrome_version():
 # Proxy Auth Extension
 # ============================================================
 def parse_proxy_url(proxy_url):
-    """Parse http://user:pass@host:port → dict."""
+    """Parse http://user:pass@host:port or socks5://user:pass@host:port."""
     if not proxy_url:
         return None
     try:
@@ -136,20 +151,22 @@ def parse_proxy_url(proxy_url):
         else:
             return None
 
-        return {'scheme': scheme, 'host': host, 'port': port, 'user': user, 'pass': pass_}
+        return {'scheme': scheme, 'host': host, 'port': port,
+                'user': user, 'pass': pass_}
     except Exception as e:
         logger.error(f"Failed to parse proxy '{proxy_url}': {e}")
         return None
 
 
 def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, scheme='http'):
-    """Create Chrome extension for proxy authentication."""
+    """Create Chrome extension that sets the proxy and injects auth credentials."""
     manifest_json = """
     {
         "version": "1.0.0",
         "manifest_version": 2,
         "name": "Chrome Proxy Auth",
-        "permissions": ["proxy", "tabs", "unlimitedStorage", "storage", "<all_urls>", "webRequest", "webRequestBlocking"],
+        "permissions": ["proxy", "tabs", "unlimitedStorage", "storage",
+                        "<all_urls>", "webRequest", "webRequestBlocking"],
         "background": {"scripts": ["background.js"]},
         "minimum_chrome_version": "22.0.0"
     }
@@ -167,7 +184,9 @@ def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, 
     function callbackFn(details) {
         return {authCredentials: {username: "%s", password: "%s"}};
     }
-    chrome.webRequest.onAuthRequired.addListener(callbackFn, {urls: ["<all_urls>"]}, ['blocking']);
+    chrome.webRequest.onAuthRequired.addListener(
+        callbackFn, {urls: ["<all_urls>"]}, ['blocking']
+    );
     """ % (scheme, proxy_host, proxy_port, proxy_user, proxy_pass)
 
     ext_dir = tempfile.mkdtemp(prefix='proxy_auth_ext_')
@@ -201,8 +220,10 @@ class BezierMouse:
         points = []
         for i in range(steps + 1):
             t = i / steps
-            x = ((1 - t) ** 3 * x1 + 3 * (1 - t) ** 2 * t * cx1 + 3 * (1 - t) * t ** 2 * cx2 + t ** 3 * x2)
-            y = ((1 - t) ** 3 * y1 + 3 * (1 - t) ** 2 * t * cy1 + 3 * (1 - t) * t ** 2 * cy2 + t ** 3 * y2)
+            x = ((1 - t) ** 3 * x1 + 3 * (1 - t) ** 2 * t * cx1
+                 + 3 * (1 - t) * t ** 2 * cx2 + t ** 3 * x2)
+            y = ((1 - t) ** 3 * y1 + 3 * (1 - t) ** 2 * t * cy1
+                 + 3 * (1 - t) * t ** 2 * cy2 + t ** 3 * y2)
             points.append((int(x), int(y)))
         return points
 
@@ -215,18 +236,17 @@ class CDPSpoofer:
     def apply(cls, driver, fp):
         try:
             if fp.get('timezone'):
-                driver.execute_cdp_cmd('Emulation.setTimezoneOverride', {'timezoneId': fp['timezone']})
-
+                driver.execute_cdp_cmd('Emulation.setTimezoneOverride',
+                                       {'timezoneId': fp['timezone']})
             if fp.get('locale'):
-                driver.execute_cdp_cmd('Emulation.setLocaleOverride', {'locale': fp['locale']})
-
+                driver.execute_cdp_cmd('Emulation.setLocaleOverride',
+                                       {'locale': fp['locale']})
             if fp.get('user_agent'):
                 driver.execute_cdp_cmd('Network.setUserAgentOverride', {
                     'userAgent': fp['user_agent'],
                     'platform': fp.get('platform', 'Win32'),
                     'acceptLanguage': fp.get('locale', 'en-US'),
                 })
-
             if fp.get('viewport'):
                 vw, vh = fp['viewport']
                 is_mobile = fp.get('is_mobile', False)
@@ -236,16 +256,15 @@ class CDPSpoofer:
                     'mobile': is_mobile,
                     'screenWidth': vw, 'screenHeight': vh,
                 })
-
             if fp.get('is_mobile'):
                 driver.execute_cdp_cmd('Emulation.setTouchEmulationEnabled', {
                     'enabled': True,
                     'maxTouchPoints': fp.get('max_touch_points', 5),
                 })
-
-            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': cls._script(fp)})
-
-            logger.info(f"CDP spoofed: {fp.get('device_name', 'Unknown')} | {fp.get('timezone')} | {fp.get('locale')}")
+            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument',
+                                   {'source': cls._script(fp)})
+            logger.info(f"CDP spoofed: {fp.get('device_name', 'Unknown')} | "
+                        f"{fp.get('timezone')} | {fp.get('locale')}")
         except Exception as e:
             logger.warning(f"CDP spoofing partial: {e}")
 
@@ -342,7 +361,10 @@ class CDPSpoofer:
 # Resource Blocker
 # ============================================================
 class ResourceBlocker:
-    BLOCK_ALWAYS = ['google-analytics.com', 'googletagmanager.com', 'facebook.net', 'hotjar.com', 'clarity.ms']
+    BLOCK_ALWAYS = [
+        'google-analytics.com', 'googletagmanager.com',
+        'facebook.net', 'hotjar.com', 'clarity.ms',
+    ]
 
     @classmethod
     def setup(cls, driver, mode='balanced'):
@@ -364,7 +386,7 @@ class ResourceBlocker:
 
 
 # ============================================================
-# BrowserStack Client
+# BrowserStack Client (cloud)
 # ============================================================
 class BrowserStackClient:
     AD_SELECTORS = [
@@ -454,6 +476,7 @@ class BrowserStackClient:
             'max_touch_points': 0,
         }
 
+    # ---------- BrowserStack cloud session ----------
     def start_session(self, url, browser='chrome', os_name='Windows', os_version='11',
                       proxy=None, use_local=False, fp=None, record_video=False,
                       block_resources='balanced', mobile=False):
@@ -481,7 +504,8 @@ class BrowserStackClient:
             bstack_opts['video'] = True
 
         options.set_capability('bstack:options', bstack_opts)
-        logger.info(f"BrowserStack: {browser} on {os_name} {os_version} | {fp.get('device_name')}")
+        logger.info(f"BrowserStack: {browser} on {os_name} {os_version} | "
+                    f"{fp.get('device_name')}")
 
         self.driver = webdriver.Remote(
             command_executor='https://hub-cloud.browserstack.com/wd/hub',
@@ -505,9 +529,7 @@ class BrowserStackClient:
         self.wait_for_page_load(timeout=30)
         return self.driver
 
-    # ============================================================
-    # Common Actions
-    # ============================================================
+    # ---------- Common actions ----------
     def fill_form(self, form_data=None, form_selectors=None):
         selectors = form_selectors or self.FORM_SELECTORS
         filled = 0
@@ -538,7 +560,9 @@ class BrowserStackClient:
         if not filled_any:
             return False
         try:
-            submit = form.find_element(By.CSS_SELECTOR, 'button[type="submit"], input[type="submit"]')
+            submit = form.find_element(
+                By.CSS_SELECTOR, 'button[type="submit"], input[type="submit"]'
+            )
             if submit.is_displayed() and submit.is_enabled():
                 submit.click()
                 self.random_sleep(2.0, 4.0)
@@ -580,22 +604,27 @@ class BrowserStackClient:
         for i in range(count):
             pixels = random.randint(250, 750)
             if i < 2 or i >= count - 1:
-                self.driver.execute_script(f"window.scrollBy({{top: {pixels}, behavior: 'smooth'}});")
+                self.driver.execute_script(
+                    f"window.scrollBy({{top: {pixels}, behavior: 'smooth'}});"
+                )
                 self.random_sleep(1.2, 2.5)
             else:
-                self.driver.execute_script(f"window.scrollBy({{top: {pixels * 2}, behavior: 'smooth'}});")
+                self.driver.execute_script(
+                    f"window.scrollBy({{top: {pixels * 2}, behavior: 'smooth'}});"
+                )
                 self.random_sleep(0.6, 1.2)
 
     def random_sleep(self, min_s, max_s):
         time.sleep(random.uniform(min_s, max_s))
 
     def _safe_click(self, element, max_retries=3):
-        for attempt in range(max_retries):
+        for _ in range(max_retries):
             try:
                 if not element.is_displayed():
                     return False
                 self.driver.execute_script(
-                    "arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", element
+                    "arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});",
+                    element,
                 )
                 self.random_sleep(0.5, 1.2)
                 try:
@@ -690,7 +719,7 @@ class BrowserStackClient:
 
 
 # ============================================================
-# Local Browser Client — with AUTO Chrome version detection
+# Local Browser Client — anti-detection, proxy auth, mobile emulation
 # ============================================================
 class LocalBrowserClient(BrowserStackClient):
     """Local Chrome with anti-detection, proxy auth, and mobile emulation."""
@@ -700,6 +729,96 @@ class LocalBrowserClient(BrowserStackClient):
         self._profile_dir = None
         self._extension_path = None
 
+    # ------------------------------------------------------------
+    # Proxy verification helpers
+    # ------------------------------------------------------------
+    def _get_public_ip(self):
+        """Return the browser's public IP via multiple fallback services."""
+        services = [
+            'https://api.ipify.org?format=json',
+            'https://ipinfo.io/json',
+        ]
+        for url in services:
+            try:
+                self.driver.get(url)
+                time.sleep(1.0)
+                body = self.driver.find_element(By.TAG_NAME, 'body').text.strip()
+                if not body:
+                    continue
+                try:
+                    data = json.loads(body)
+                    ip = (data.get('ip') or data.get('IP') or '').strip()
+                    if ip:
+                        return ip
+                except json.JSONDecodeError:
+                    # Plain text — take the first token
+                    if body.count('.') == 3:
+                        return body.split()[0].strip()
+            except Exception as e:
+                logger.debug(f"IP service {url} failed: {e}")
+                continue
+        return None
+
+    def _verify_proxy_effective(self, proxy_url):
+        """
+        Verify that the browser is truly going through the proxy.
+        Returns True if the proxy is effective, False if bypassed or dead.
+        """
+        if self.driver is None:
+            logger.error("[PROXY-CHECK] Driver is None")
+            return False
+
+        public_ip = self._get_public_ip()
+        logger.info(f"[PROXY-CHECK] Public IP via browser: {public_ip}")
+        if not public_ip:
+            logger.error("[PROXY-CHECK] Could not read public IP")
+            return False
+
+        # Lookup geo/ISP info about that IP
+        try:
+            r = requests.get(
+                f'http://ip-api.com/json/{public_ip}'
+                f'?fields=status,countryCode,isp,org,as,hosting,proxy',
+                timeout=6,
+            )
+            info = r.json()
+        except Exception as e:
+            logger.warning(f"[PROXY-CHECK] ip-api lookup failed: {e}")
+            info = {}
+
+        is_hosting = info.get('hosting', False)
+        is_proxy = info.get('proxy', False)
+        isp = (info.get('isp') or '').lower()
+        org = (info.get('org') or '').lower()
+        country = info.get('countryCode', '??')
+
+        logger.info(
+            f"[PROXY-CHECK] IP={public_ip} | country={country} | "
+            f"hosting={is_hosting} | proxy={is_proxy} | isp={isp[:40]}"
+        )
+
+        # Hard fail: traffic exits from GitHub runner
+        if any(k in isp for k in AZURE_DATACENTER_KEYWORDS) or \
+           any(k in org for k in AZURE_DATACENTER_KEYWORDS):
+            logger.error(
+                f"❌ PROXY BYPASSED — traffic exits from GitHub runner "
+                f"({isp[:40]}). Extension auth failed. Aborting."
+            )
+            return False
+
+        # Soft warn: datacenter proxy (ad networks may still accept it)
+        if is_hosting and not is_proxy:
+            logger.warning(
+                "⚠️  PROXY is DATACENTER (hosting=true). "
+                "Ad networks may block. Continuing but expect low yield."
+            )
+
+        logger.info(f"✅ Proxy effective: {country} via {isp[:40]}")
+        return True
+
+    # ------------------------------------------------------------
+    # Session startup
+    # ------------------------------------------------------------
     def start_session(self, url, headless=True, proxy=None, fp=None,
                       block_resources='balanced', mobile=True):
         fp = fp or self._random_fp(mobile=mobile)
@@ -712,6 +831,7 @@ class LocalBrowserClient(BrowserStackClient):
         if headless:
             options.add_argument('--headless=new')
 
+        # ---------- Base flags ----------
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
@@ -725,7 +845,29 @@ class LocalBrowserClient(BrowserStackClient):
         options.add_argument('--log-level=3')
         options.add_argument(f'--user-agent={fp.get("user_agent", "")}')
 
-        # ---------- PROXY ----------
+        # ---------- Speed-up flags (save ~30s per launch) ----------
+        options.add_argument('--disable-background-networking')
+        options.add_argument('--disable-background-timer-throttling')
+        options.add_argument('--disable-client-side-phishing-detection')
+        options.add_argument('--disable-default-apps')
+        options.add_argument('--disable-hang-monitor')
+        options.add_argument('--disable-popup-blocking')
+        options.add_argument('--disable-prompt-on-repost')
+        options.add_argument('--disable-sync')
+        options.add_argument('--metrics-recording-only')
+        options.add_argument('--no-first-run')
+        options.add_argument('--no-default-browser-check')
+        options.add_argument('--safebrowsing-disable-auto-update')
+        options.add_argument('--password-store=basic')
+        options.add_argument('--use-mock-keychain')
+        options.add_argument(
+            '--disable-features='
+            'DialMediaRouteProvider,Translate,OptimizationHints,'
+            'MediaRouter,InterestFeedContentSuggestions,'
+            'CalculateNativeWinOcclusion'
+        )
+
+        # ---------- Proxy ----------
         if proxy:
             parsed = parse_proxy_url(proxy)
             if parsed:
@@ -742,36 +884,44 @@ class LocalBrowserClient(BrowserStackClient):
                             proxy_user=user, proxy_pass=pass_, scheme=scheme,
                         )
                         options.add_extension(self._extension_path)
-                        logger.info(f"Proxy auth extension loaded: {scheme}://{host}:{port}")
+                        logger.info(
+                            f"Proxy auth extension loaded: {scheme}://{host}:{port}"
+                        )
                     except Exception as e:
-                        logger.warning(f"Extension failed: {e}. Trying direct --proxy-server")
-                        options.add_argument(f'--proxy-server={scheme}://{host}:{port}')
+                        logger.warning(
+                            f"Extension failed: {e}. Falling back to --proxy-server"
+                        )
+                        options.add_argument(
+                            f'--proxy-server={scheme}://{host}:{port}'
+                        )
                 else:
-                    options.add_argument(f'--proxy-server={scheme}://{host}:{port}')
+                    options.add_argument(
+                        f'--proxy-server={scheme}://{host}:{port}'
+                    )
                     logger.info(f"Proxy without auth: {scheme}://{host}:{port}")
 
-        # ---------- DRIVER CREATION ----------
+        # ---------- Driver creation ----------
         driver = None
         chrome_version = detect_chrome_version()
 
-        # Try undetected-chromedriver with auto-detected version
         try:
             import undetected_chromedriver as uc
-            logger.info(f"Using undetected-chromedriver (detected Chrome: {chrome_version})")
-
+            logger.info(
+                f"Using undetected-chromedriver (detected Chrome: {chrome_version})"
+            )
             try:
                 if chrome_version:
                     driver = uc.Chrome(
-                        options=options,
-                        use_subprocess=True,
+                        options=options, use_subprocess=True,
                         version_main=chrome_version,
                     )
                 else:
                     driver = uc.Chrome(options=options, use_subprocess=True)
                 logger.info("undetected-chromedriver started successfully")
             except Exception as e:
-                logger.warning(f"uc.Chrome with version_main={chrome_version} failed: {e}")
-                # Retry without version_main
+                logger.warning(
+                    f"uc.Chrome(version_main={chrome_version}) failed: {e}"
+                )
                 try:
                     logger.info("Retrying uc.Chrome without version_main")
                     driver = uc.Chrome(options=options, use_subprocess=True)
@@ -783,17 +933,20 @@ class LocalBrowserClient(BrowserStackClient):
             logger.warning("undetected-chromedriver not installed")
             driver = None
 
-        # Fallback: plain Chrome with system ChromeDriver
         if driver is None:
             logger.info("Using plain Chrome with system ChromeDriver")
-            chrome_bin = os.environ.get('CHROME_BIN', '/usr/local/bin/google-chrome')
+            chrome_bin = os.environ.get(
+                'CHROME_BIN', '/usr/local/bin/google-chrome'
+            )
             if os.path.exists(chrome_bin):
                 options.binary_location = chrome_bin
 
             self._profile_dir = tempfile.mkdtemp(prefix='chrome_profile_')
             options.add_argument(f'--user-data-dir={self._profile_dir}')
 
-            cd_path = os.environ.get('CHROMEDRIVER_PATH', '/usr/local/bin/chromedriver')
+            cd_path = os.environ.get(
+                'CHROMEDRIVER_PATH', '/usr/local/bin/chromedriver'
+            )
             if os.path.exists(cd_path):
                 service = Service(executable_path=cd_path)
                 driver = webdriver.Chrome(service=service, options=options)
@@ -802,7 +955,7 @@ class LocalBrowserClient(BrowserStackClient):
 
         self.driver = driver
 
-        # Apply anti-detection
+        # ---------- Anti-detection ----------
         CDPSpoofer.apply(self.driver, fp)
         ResourceBlocker.setup(self.driver, mode=block_resources)
 
@@ -821,19 +974,33 @@ class LocalBrowserClient(BrowserStackClient):
         self.driver.set_page_load_timeout(60)
         self.driver.set_script_timeout(30)
 
-        # Proxy verification
+        # ---------- Proxy verification (BLOCKING) ----------
         if proxy:
+            self.driver.set_page_load_timeout(25)
             try:
-                self.driver.get('http://httpbin.org/ip')
-                time.sleep(2)
-                try:
-                    body = self.driver.find_element(By.TAG_NAME, 'body').text
-                    logger.info(f"Proxy check: {body[:200]}")
-                except Exception:
-                    logger.info("Proxy check: page loaded")
+                ok = self._verify_proxy_effective(proxy)
             except Exception as e:
-                logger.warning(f"Proxy verification failed: {e}")
+                logger.error(f"Proxy verification raised: {e}")
+                ok = False
+            finally:
+                try:
+                    self.driver.set_page_load_timeout(60)
+                except Exception:
+                    pass
 
+            if not ok:
+                # Clean up before raising so we don't leak Chrome processes
+                try:
+                    self.driver.quit()
+                except Exception:
+                    pass
+                self.driver = None
+                raise RuntimeError(
+                    "Proxy not effective — aborted to save quota. "
+                    "Check that Chrome extensions load in headless=new mode."
+                )
+
+        # ---------- Navigate to target ----------
         self.driver.get(url)
         self.wait_for_page_load(timeout=30)
         return self.driver
