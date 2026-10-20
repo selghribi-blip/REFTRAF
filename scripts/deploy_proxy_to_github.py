@@ -131,11 +131,10 @@ def main():
     print("🔒 تشفير القيمة...")
     encrypted = encrypt_secret(key_data['key'], proxy_string)
 
-    print(f"📤 رفع إلى GitHub Secrets باسم '{SECRET_NAME}'...")
+    print("📤 رفع السرّ إلى GitHub Secrets...")
     if update_github_secret(SECRET_NAME, encrypted, key_data['key_id']):
-        print(f"\n✅ تم رفع البروكسي بنجاح!")
-        print(f"   Secret: {SECRET_NAME}")
-        print(f"   Repo:   {GITHUB_REPO}")
+        print("\n✅ تم رفع البروكسي بنجاح!")
+        print("   تم تحديث GitHub Secret بنجاح")
     else:
         print("\n❌ فشل الرفع")
         sys.exit(1)
