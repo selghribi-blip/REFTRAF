@@ -34,8 +34,6 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # Constants — detection keywords for CI bypass
 # ============================================================
-# أي من هذه الكلمات في ISP/Org يعني أن الاتصال مباشر من GitHub runner
-# (وليس من البروكسي). عند اكتشافها، نوقف الجلسة فوراً لتوفير حصة Actions.
 AZURE_DATACENTER_KEYWORDS = (
     'azure', 'microsoft', 'cloudapp', 'github',
     'amazon', 'aws', 'google cloud', 'digitalocean',
@@ -128,7 +126,7 @@ def detect_chrome_version():
 
 
 # ============================================================
-# Proxy Auth Extension
+# Proxy Auth Extension (Manifest V3)
 # ============================================================
 def parse_proxy_url(proxy_url):
     """Parse http://user:pass@host:port or socks5://user:pass@host:port."""
@@ -159,21 +157,32 @@ def parse_proxy_url(proxy_url):
 
 
 def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, scheme='http'):
-    """Create Chrome extension that sets the proxy and injects auth credentials."""
+    """
+    Create a Chrome extension (manifest v3) that sets the proxy and injects
+    auth credentials. Returns the path to the UNPACKED extension directory
+    so it can be loaded with --load-extension.
+    """
     manifest_json = """
     {
         "version": "1.0.0",
-        "manifest_version": 2,
+        "manifest_version": 3,
         "name": "Chrome Proxy Auth",
-        "permissions": ["proxy", "tabs", "unlimitedStorage", "storage",
-                        "<all_urls>", "webRequest", "webRequestBlocking"],
-        "background": {"scripts": ["background.js"]},
-        "minimum_chrome_version": "22.0.0"
+        "permissions": [
+            "proxy",
+            "storage",
+            "webRequest",
+            "webRequestAuthProvider"
+        ],
+        "host_permissions": ["<all_urls>"],
+        "background": {
+            "service_worker": "background.js"
+        },
+        "minimum_chrome_version": "120.0.0"
     }
     """
 
     background_js = """
-    var config = {
+    const config = {
         mode: "fixed_servers",
         rules: {
             singleProxy: {scheme: "%s", host: "%s", port: parseInt(%s)},
@@ -181,11 +190,18 @@ def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, 
         }
     };
     chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
-    function callbackFn(details) {
-        return {authCredentials: {username: "%s", password: "%s"}};
-    }
+
     chrome.webRequest.onAuthRequired.addListener(
-        callbackFn, {urls: ["<all_urls>"]}, ['blocking']
+        function(details, callback) {
+            callback({
+                authCredentials: {
+                    username: "%s",
+                    password: "%s"
+                }
+            });
+        },
+        {urls: ["<all_urls>"]},
+        ['asyncBlocking']
     );
     """ % (scheme, proxy_host, proxy_port, proxy_user, proxy_pass)
 
@@ -198,13 +214,8 @@ def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, 
     with open(background_path, 'w') as f:
         f.write(background_js)
 
-    zip_path = os.path.join(ext_dir, 'proxy_auth_plugin.zip')
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zp:
-        zp.write(manifest_path, 'manifest.json')
-        zp.write(background_path, 'background.js')
-
-    logger.info(f"Created proxy auth extension: {zip_path}")
-    return zip_path
+    logger.info(f"Created proxy auth extension (MV3) at: {ext_dir}")
+    return ext_dir
 
 
 # ============================================================
@@ -719,10 +730,10 @@ class BrowserStackClient:
 
 
 # ============================================================
-# Local Browser Client — anti-detection, proxy auth, mobile emulation
+# Local Browser Client — anti-detection, proxy auth (MV3), mobile emulation
 # ============================================================
 class LocalBrowserClient(BrowserStackClient):
-    """Local Chrome with anti-detection, proxy auth, and mobile emulation."""
+    """Local Chrome with anti-detection, proxy auth (MV3), and mobile emulation."""
 
     def __init__(self):
         super().__init__()
@@ -751,7 +762,6 @@ class LocalBrowserClient(BrowserStackClient):
                     if ip:
                         return ip
                 except json.JSONDecodeError:
-                    # Plain text — take the first token
                     if body.count('.') == 3:
                         return body.split()[0].strip()
             except Exception as e:
@@ -774,7 +784,6 @@ class LocalBrowserClient(BrowserStackClient):
             logger.error("[PROXY-CHECK] Could not read public IP")
             return False
 
-        # Lookup geo/ISP info about that IP
         try:
             r = requests.get(
                 f'http://ip-api.com/json/{public_ip}'
@@ -797,7 +806,6 @@ class LocalBrowserClient(BrowserStackClient):
             f"hosting={is_hosting} | proxy={is_proxy} | isp={isp[:40]}"
         )
 
-        # Hard fail: traffic exits from GitHub runner
         if any(k in isp for k in AZURE_DATACENTER_KEYWORDS) or \
            any(k in org for k in AZURE_DATACENTER_KEYWORDS):
             logger.error(
@@ -806,7 +814,6 @@ class LocalBrowserClient(BrowserStackClient):
             )
             return False
 
-        # Soft warn: datacenter proxy (ad networks may still accept it)
         if is_hosting and not is_proxy:
             logger.warning(
                 "⚠️  PROXY is DATACENTER (hosting=true). "
@@ -867,7 +874,7 @@ class LocalBrowserClient(BrowserStackClient):
             'CalculateNativeWinOcclusion'
         )
 
-        # ---------- Proxy ----------
+        # ---------- Proxy (Manifest V3) ----------
         if proxy:
             parsed = parse_proxy_url(proxy)
             if parsed:
@@ -883,9 +890,19 @@ class LocalBrowserClient(BrowserStackClient):
                             proxy_host=host, proxy_port=port,
                             proxy_user=user, proxy_pass=pass_, scheme=scheme,
                         )
-                        options.add_extension(self._extension_path)
+                        # Load unpacked extension directory (MV3)
+                        options.add_argument(
+                            f'--load-extension={self._extension_path}'
+                        )
+                        options.add_argument(
+                            f'--disable-extensions-except={self._extension_path}'
+                        )
+                        # Required since Chrome 137 to allow --load-extension
+                        options.add_argument(
+                            '--disable-features=DisableLoadExtensionCommandLineSwitch'
+                        )
                         logger.info(
-                            f"Proxy auth extension loaded: {scheme}://{host}:{port}"
+                            f"Proxy auth extension (MV3) loaded: {scheme}://{host}:{port}"
                         )
                     except Exception as e:
                         logger.warning(
@@ -989,7 +1006,6 @@ class LocalBrowserClient(BrowserStackClient):
                     pass
 
             if not ok:
-                # Clean up before raising so we don't leak Chrome processes
                 try:
                     self.driver.quit()
                 except Exception:
