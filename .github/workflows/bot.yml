@@ -84,7 +84,7 @@ jobs:
           retention-days: 3
 
   # ============================================================
-  # 2) LOCAL CHROME (with MV3 proxy auth)
+  # 2) LOCAL CHROME (setup-chrome guarantees matching versions)
   # ============================================================
   run-local-browser-spider:
     name: Local #${{ matrix.attempt }}
@@ -107,13 +107,48 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      # --- Caches to speed up repeated runs ---
-      - name: Cache Google Chrome .deb
-        uses: actions/cache@v4
+      # ------------------------------------------------------------
+      # إصلاح جذري: تثبيت Chrome + ChromeDriver متطابقين تماماً
+      # ------------------------------------------------------------
+      - name: Setup Chrome (stable) with matching ChromeDriver
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v2
         with:
-          path: ~/chrome-cache
-          key: chrome-deb-${{ runner.os }}-v1
+          chrome-version: 'stable'
+          install-chromedriver: 'true'
+          install-dependencies: 'true'
 
+      - name: Verify Chrome/ChromeDriver versions match
+        run: |
+          set -e
+          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
+          DRIVER_VERSION=$(chromedriver --version | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1)
+          echo "Chrome:        $CHROME_VERSION"
+          echo "ChromeDriver:  $DRIVER_VERSION"
+          CHROME_MAJOR=$(echo $CHROME_VERSION | cut -d. -f1)
+          DRIVER_MAJOR=$(echo $DRIVER_VERSION | cut -d. -f1)
+          if [ "$CHROME_MAJOR" != "$DRIVER_MAJOR" ]; then
+            echo "❌ MAJOR VERSION MISMATCH: Chrome=$CHROME_MAJOR vs Driver=$DRIVER_MAJOR"
+            exit 1
+          fi
+          echo "✅ Versions match"
+          echo "google-chrome path: $(which google-chrome)"
+          echo "chromedriver path:  $(which chromedriver)"
+          echo "CHROME_BIN=$(which google-chrome)" >> $GITHUB_ENV
+          echo "CHROMEDRIVER_PATH=$(which chromedriver)" >> $GITHUB_ENV
+
+      # ------------------------------------------------------------
+      # xvfb + مكتبات النظام
+      # ------------------------------------------------------------
+      - name: Install xvfb and system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libnss3 libgbm1 libasound2t64 2>/dev/null || \
+            sudo apt-get install -y xvfb libnss3 libgbm1 libasound2
+
+      # ------------------------------------------------------------
+      # Cache uc binaries
+      # ------------------------------------------------------------
       - name: Cache undetected-chromedriver binaries
         uses: actions/cache@v4
         with:
@@ -122,52 +157,25 @@ jobs:
           restore-keys: |
             uc-chromedriver-${{ runner.os }}-
 
-      - name: Install Chrome (Latest Stable)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget unzip xvfb
-
-          mkdir -p ~/chrome-cache
-          if [ ! -f ~/chrome-cache/google-chrome.deb ]; then
-            wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
-              -O ~/chrome-cache/google-chrome.deb
-          fi
-          sudo dpkg -i ~/chrome-cache/google-chrome.deb || sudo apt-get -fy install
-          google-chrome --version
-
-          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
-          echo "Chrome version: $CHROME_VERSION"
-
-          if wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" -O /tmp/cd.zip; then
-            unzip -q /tmp/cd.zip -d /tmp/
-            sudo mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
-          else
-            wget -q "https://chromedriver.storage.googleapis.com/${CHROME_VERSION}/chromedriver_linux64.zip" -O /tmp/cd.zip
-            unzip -q /tmp/cd.zip -d /tmp/
-            sudo mv /tmp/chromedriver /usr/local/bin/chromedriver
-          fi
-          sudo chmod +x /usr/local/bin/chromedriver
-          /usr/local/bin/chromedriver --version
-
-          echo "CHROME_BIN=/usr/bin/google-chrome" >> $GITHUB_ENV
-          echo "CHROMEDRIVER_PATH=/usr/local/bin/chromedriver" >> $GITHUB_ENV
-
       - name: Install Python deps
         run: |
           pip install --upgrade pip
           pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
           pip install --no-cache-dir -r requirements.txt
 
+      # ------------------------------------------------------------
+      # تشغيل العنكبوت
+      # ------------------------------------------------------------
       - name: Run Local
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
-          CHROME_BIN: '/usr/bin/google-chrome'
-          CHROMEDRIVER_PATH: '/usr/local/bin/chromedriver'
-          # ✅ KEEP THIS AS 'true' — MV3 extension makes it work
+          # CHROME_BIN و CHROMEDRIVER_PATH مضبوطان من خطوة setup-chrome
           USE_PROXY_WITH_BROWSER: 'true'
           PROXY_HEALTHCHECK: 'true'
           MANUAL_PROXY_FILE: 'manual_proxies.txt'
+          # تحت xvfb لا نضيف --headless=new (تجنب تعارض الإضافات)
+          DISPLAY_MODE: 'xvfb'
         run: |
           xvfb-run -a scrapy crawl browserstack_bot \
             -a target_url="${TARGET_URL}" \
