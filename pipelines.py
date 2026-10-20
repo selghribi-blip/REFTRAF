@@ -21,11 +21,9 @@ def _sanitize_mongo_uri(uri):
     if not uri:
         return ''
     uri = str(uri).strip()
-    # Remove surrounding quotes
     if (uri.startswith('"') and uri.endswith('"')) or \
        (uri.startswith("'") and uri.endswith("'")):
         uri = uri[1:-1]
-    # Remove ALL whitespace/newlines
     uri = ''.join(uri.split())
     return uri
 
@@ -35,20 +33,20 @@ class MongoPipeline:
     BATCH_TIMEOUT = 10
     CONNECTION_TIMEOUT_MS = 8000
 
-    TTL_VISITS = 90 * 24 * 3600
-    TTL_ADS = 180 * 24 * 3600
-    TTL_FORMS = 180 * 24 * 3600
-    TTL_ERRORS = 30 * 24 * 3600
+    TTL_VISITS   = 90 * 24 * 3600
+    TTL_ADS      = 180 * 24 * 3600
+    TTL_FORMS    = 180 * 24 * 3600
+    TTL_ERRORS   = 30 * 24 * 3600
     TTL_SESSIONS = 365 * 24 * 3600
-    TTL_HOURLY = 30 * 24 * 3600
-    TTL_DAILY = 3 * 365 * 24 * 3600
+    TTL_HOURLY   = 30 * 24 * 3600
+    TTL_DAILY    = 3 * 365 * 24 * 3600
 
     def __init__(self, mongo_uri, database='traffic_bot'):
         self.mongo_uri = mongo_uri
-        self.database = database
-        self.client = None
-        self.db = None
-        self._buffers = defaultdict(list)
+        self.database  = database
+        self.client    = None
+        self.db        = None
+        self._buffers  = defaultdict(list)
         self._last_flush = time.time()
         self._session_id = None
         self._session_stats = {
@@ -63,7 +61,7 @@ class MongoPipeline:
         uri = _sanitize_mongo_uri(raw_uri)
 
         if not uri or not uri.startswith(('mongodb://', 'mongodb+srv://')):
-            logger.warning("MONGODB_URI invalid or empty - pipeline disabled")
+            logger.warning("MONGODB_URI invalid or empty — pipeline disabled")
             if uri:
                 logger.warning(f"   Received length: {len(uri)} | first 30: {uri[:30]}")
             raise NotConfigured("MONGODB_URI invalid")
@@ -187,24 +185,25 @@ class MongoPipeline:
             self._session_stats['errors'] += 1
 
     def _handle_ad(self, adapter):
+        # Persist the ad_click event — do NOT increment session stats here.
+        # _handle_visit already accumulates `ads_clicked` from each page.
         self._buffers['ad_clicks'].append({
             'session_id': self._session_id,
-            'ad_url': adapter.get('url', ''),
-            'status': adapter.get('status', 0),
+            'ad_url':     adapter.get('url', ''),
+            'status':     adapter.get('status', 0),
             'parent_url': adapter.get('parent_url', ''),
-            'timestamp': datetime.now(timezone.utc),
+            'timestamp':  datetime.now(timezone.utc),
         })
-        self._session_stats['ads_clicked'] += 1
 
     def _handle_form(self, adapter):
+        # Persist the form_submit event — do NOT increment session stats here.
         self._buffers['form_submits'].append({
             'session_id': self._session_id,
-            'form_url': adapter.get('url', ''),
-            'status': adapter.get('status', 0),
+            'form_url':   adapter.get('url', ''),
+            'status':     adapter.get('status', 0),
             'parent_url': adapter.get('parent_url', ''),
-            'timestamp': datetime.now(timezone.utc),
+            'timestamp':  datetime.now(timezone.utc),
         })
-        self._session_stats['forms_filled'] += 1
 
     def _maybe_flush(self):
         for name, buf in self._buffers.items():
@@ -315,7 +314,6 @@ class StatsAggregationPipeline:
         hour_start = now.replace(minute=0, second=0, microsecond=0)
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
-        # Hourly
         result = list(db.visits.aggregate([
             {'$match': {'timestamp': {'$gte': hour_start}}},
             {'$group': {
@@ -341,7 +339,6 @@ class StatsAggregationPipeline:
                 upsert=True,
             )
 
-        # Daily
         result = list(db.visits.aggregate([
             {'$match': {'timestamp': {'$gte': day_start}}},
             {'$group': {
