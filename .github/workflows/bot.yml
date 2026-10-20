@@ -1,0 +1,318 @@
+name: Traffic Bot Runner
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Override target URL'
+        required: false
+        default: ''
+      run_mode:
+        description: 'Run mode'
+        required: false
+        default: 'both'
+        type: choice
+        options: [both, scrapy, browserstack, local, export]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  # ============================================================
+  # 1) SCRAPY SPIDER
+  # ============================================================
+  run-scrapy-spider:
+    name: Scrapy #${{ matrix.attempt }}
+    if: |
+      github.event_name == 'schedule' ||
+      github.event.inputs.run_mode == 'both' ||
+      github.event.inputs.run_mode == 'scrapy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        attempt: [1, 2, 3, 4, 5]
+      fail-fast: false
+      max-parallel: 3
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python deps
+        run: |
+          pip install --upgrade pip
+          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Run Scrapy
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
+          MANUAL_PROXY_FILE: 'manual_proxies.txt'
+          PROXY_HEALTHCHECK: 'false'
+          DISABLE_PROXIES: 'false'
+          FETCH_REMOTE_PROXIES: 'true'
+        run: |
+          scrapy crawl traffic_bot \
+            -a target_url="${TARGET_URL}" \
+            -O scrapy_results_${{ matrix.attempt }}.json \
+            -L INFO
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scrapy-results-${{ matrix.attempt }}
+          path: scrapy_results_${{ matrix.attempt }}.json
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # ============================================================
+  # 2) LOCAL CHROME — with auto Chrome version
+  # ============================================================
+  run-local-browser-spider:
+    name: Local #${{ matrix.attempt }}
+    if: |
+      github.event_name == 'schedule' ||
+      github.event.inputs.run_mode == 'both' ||
+      github.event.inputs.run_mode == 'local'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      matrix:
+        attempt: [1, 2, 3, 4, 5]
+      fail-fast: false
+      max-parallel: 2
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Chrome (Latest Stable)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget unzip xvfb
+
+          # Install latest Google Chrome
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get -fy install
+          google-chrome --version
+
+          # Install matching ChromeDriver from Chrome for Testing
+          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
+          echo "Chrome version: $CHROME_VERSION"
+
+          # Try Chrome for Testing
+          if wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" -O /tmp/cd.zip; then
+            unzip -q /tmp/cd.zip -d /tmp/
+            sudo mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
+          else
+            # Fallback to older CDN
+            wget -q "https://chromedriver.storage.googleapis.com/${CHROME_VERSION}/chromedriver_linux64.zip" -O /tmp/cd.zip
+            unzip -q /tmp/cd.zip -d /tmp/
+            sudo mv /tmp/chromedriver /usr/local/bin/chromedriver
+          fi
+
+          sudo chmod +x /usr/local/bin/chromedriver
+          /usr/local/bin/chromedriver --version
+
+          # Set environment variables
+          echo "CHROME_BIN=/usr/bin/google-chrome" >> $GITHUB_ENV
+          echo "CHROMEDRIVER_PATH=/usr/local/bin/chromedriver" >> $GITHUB_ENV
+
+      - name: Install Python deps
+        run: |
+          pip install --upgrade pip
+          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Run Local
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
+          CHROME_BIN: '/usr/bin/google-chrome'
+          CHROMEDRIVER_PATH: '/usr/local/bin/chromedriver'
+          USE_PROXY_WITH_BROWSER: 'true'
+          MANUAL_PROXY_FILE: 'manual_proxies.txt'
+        run: |
+          xvfb-run -a scrapy crawl browserstack_bot \
+            -a target_url="${TARGET_URL}" \
+            -a use_browserstack="false" \
+            -O local_results_${{ matrix.attempt }}.json \
+            -L INFO
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: local-results-${{ matrix.attempt }}
+          path: local_results_${{ matrix.attempt }}.json
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # ============================================================
+  # 3) BROWSERSTACK
+  # ============================================================
+  run-browserstack-spider:
+    name: BrowserStack
+    if: |
+      github.event_name == 'schedule' ||
+      github.event.inputs.run_mode == 'both' ||
+      github.event.inputs.run_mode == 'browserstack'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python deps
+        run: |
+          pip install --upgrade pip
+          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Run BrowserStack
+        env:
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
+        run: |
+          scrapy crawl browserstack_bot \
+            -a target_url="${TARGET_URL}" \
+            -a use_browserstack="true" \
+            -O browserstack_results.json \
+            -L INFO
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browserstack-results
+          path: browserstack_results.json
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # ============================================================
+  # 4) EXPORT DATA
+  # ============================================================
+  export-data:
+    name: Export Data
+    if: github.event.inputs.run_mode == 'export'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pymongo pandas openpyxl
+
+      - name: Export
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          EXPORT_DAYS: '7'
+          EXPORT_DIR: './exports'
+        run: python scripts/export_mongo.py
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mongo-exports
+          path: exports/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # ============================================================
+  # 5) AGGREGATE
+  # ============================================================
+  aggregate-results:
+    name: Aggregate
+    needs: [run-scrapy-spider, run-local-browser-spider, run-browserstack-spider]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Aggregate
+        run: |
+          echo "=== TRAFFIC BOT RUN SUMMARY ==="
+          echo "Run: ${{ github.run_number }} | Trigger: ${{ github.event_name }}"
+          echo ""
+
+          total=$(python3 - <<'PYEOF'
+          import json, glob
+          total = 0
+          for f in glob.glob('artifacts/**/*.json', recursive=True):
+              try:
+                  with open(f) as fh:
+                      c = fh.read().strip()
+                      if not c: continue
+                      data = json.loads(c) if c.startswith('[') else [json.loads(l) for l in c.split('\n') if l.strip()]
+                      total += len(data)
+              except Exception:
+                  pass
+          print(total)
+          PYEOF
+          )
+          echo "TOTAL ITEMS: $total"
+
+          local_count=$(python3 -c "
+          import json, glob
+          t = 0
+          for f in glob.glob('artifacts/local-results-*/*.json'):
+              try:
+                  with open(f) as fh:
+                      t += len(json.load(fh))
+              except: pass
+          print(t)
+          ")
+          echo "Local items: $local_count"
+
+          scrapy_count=$(python3 -c "
+          import json, glob
+          t = 0
+          for f in glob.glob('artifacts/scrapy-results-*/*.json'):
+              try:
+                  with open(f) as fh:
+                      t += len(json.load(fh))
+              except: pass
+          print(t)
+          ")
+          echo "Scrapy items: $scrapy_count"
+
+  # ============================================================
+  # 6) CLEANUP
+  # ============================================================
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 3
+          keep_minimum_runs: 20
