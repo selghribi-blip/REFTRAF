@@ -1,5 +1,10 @@
 # settings.py
 import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / '.env', override=False)
 
 BOT_NAME = 'traffic_bot'
 SPIDER_MODULES = ['spiders']
@@ -9,9 +14,9 @@ ROBOTSTXT_OBEY = False
 FEED_EXPORT_ENCODING = 'utf-8'
 
 # ---------------- Throttling ----------------
-DOWNLOAD_DELAY = 2
+DOWNLOAD_DELAY = int(os.getenv('DOWNLOAD_DELAY', '2'))
 RANDOMIZE_DOWNLOAD_DELAY = True
-CONCURRENT_REQUESTS = 4
+CONCURRENT_REQUESTS = int(os.getenv('CONCURRENT_REQUESTS', '4'))
 CONCURRENT_REQUESTS_PER_DOMAIN = 2
 
 AUTOTHROTTLE_ENABLED = True
@@ -32,7 +37,7 @@ COOKIES_ENABLED = True
 TELNETCONSOLE_ENABLED = False
 
 # ---------------- Logging ----------------
-LOG_LEVEL = 'INFO'
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
 LOG_FORMAT = '%(asctime)s [%(name)s] %(levelname)s: %(message)s'
 LOG_DATEFORMAT = '%Y-%m-%d %H:%M:%S'
 
@@ -41,7 +46,8 @@ ADDONS = {}
 # ---------------- Downloader Middlewares ----------------
 DOWNLOADER_MIDDLEWARES = {
     'middlewares.fingerprint_rotator.FingerprintRotatorMiddleware': 542,
-    'middlewares.proxy_rotator.FreeProxyRotatorMiddleware': 555,
+    'middlewares.zyte_middleware.ZyteMiddleware':                   543,
+    'middlewares.proxy_rotator.FreeProxyRotatorMiddleware':         555,
 }
 
 # ---------------- Redirects ----------------
@@ -58,14 +64,15 @@ ITEM_PIPELINES = {
     'pipelines.StatsAggregationPipeline': 400,
 }
 
-MONGODB_URI = os.environ.get('MONGODB_URI', '')
-MONGODB_DATABASE = 'traffic_bot'
+MONGODB_URI      = os.getenv('MONGODB_URI', '')
+MONGODB_DATABASE = os.getenv('MONGODB_DATABASE', 'traffic_bot')
+ZYTE_API_KEY     = os.getenv('ZYTE_API_KEY', '')
 
 # ---------------- CloseSpider ----------------
-CLOSESPIDER_PAGECOUNT = 200
-CLOSESPIDER_ITEMCOUNT = 500
-CLOSESPIDER_ERRORCOUNT = 100
-CLOSESPIDER_TIMEOUT = 1800
+CLOSESPIDER_PAGECOUNT   = int(os.getenv('MAX_PAGES_PER_RUN', '200'))
+CLOSESPIDER_ITEMCOUNT   = 500
+CLOSESPIDER_ERRORCOUNT  = 100
+CLOSESPIDER_TIMEOUT     = 1800
 
 EXTENSIONS = {
     'scrapy.extensions.closespider.CloseSpider': 500,
@@ -99,8 +106,8 @@ DEPTH_STATS_VERBOSE = True
 DEPTH_PRIORITY = 1
 
 # ---------------- Scheduler ----------------
-SCHEDULER_DISK_QUEUE = 'scrapy.squeues.PickleFifoDiskQueue'
+SCHEDULER_DISK_QUEUE   = 'scrapy.squeues.PickleFifoDiskQueue'
 SCHEDULER_MEMORY_QUEUE = 'scrapy.squeues.FifoMemoryQueue'
 
 # ---------------- Target ----------------
-TARGET_URL = os.environ.get('TARGET_URL', 'https://www.forjo.tech/')
+TARGET_URL = os.getenv('TARGET_URL', 'https://www.forjo.tech/')
