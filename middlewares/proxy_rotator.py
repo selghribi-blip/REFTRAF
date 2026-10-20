@@ -1,18 +1,6 @@
 # middlewares/proxy_rotator.py
-# Proxy Rotator with section headers support and SOCKS4 for HTTPS fallback
-# ============================================
-# Supported formats in manual_proxies.txt:
-#   - ip:port                       (uses current section)
-#   - ip:port:user:pass             (HTTP auth)
-#   - user:pass@ip:port             (HTTP auth)
-#   - socks4://ip:port              (explicit)
-#   - socks5://ip:port              (explicit)
-#   - http://ip:port                (explicit)
-# Section headers:
-#   # SOCKS4
-#   # SOCKS5
-#   # HTTP
-
+# Proxy Rotator with section headers support and SOCKS4/SOCKS5/HTTP pools
+# ==========================================================================
 import os
 import re
 import random
@@ -33,14 +21,15 @@ class FreeProxyRotatorMiddleware:
         'https://raw.githubusercontent.com/dinoz0rg/proxy-list/main/checked_proxies/http.txt',
     ]
 
-    MAX_FAILURES = 1
-    MAX_SWAPS_PER_REQUEST = 8
-    SOCKS_FAILS_BEFORE_HTTP = 3
-    PROXY_TIMEOUT = 20
-    HEALTHCHECK_URL = 'http://httpbin.org/ip'
-    HEALTHCHECK_TIMEOUT = 8
-    HEALTHCHECK_WORKERS = 50
-    HEALTHCHECK_SAMPLE = 300
+    # ---- tuned for CI: fail fast, drop dead proxies quickly ----
+    MAX_FAILURES              = 1
+    MAX_SWAPS_PER_REQUEST     = 8
+    SOCKS_FAILS_BEFORE_HTTP   = 3
+    PROXY_TIMEOUT             = 10        # was 20 — halved to reduce wasted time
+    HEALTHCHECK_URL           = 'http://httpbin.org/ip'
+    HEALTHCHECK_TIMEOUT       = 5         # was 8
+    HEALTHCHECK_WORKERS       = 80        # was 50
+    HEALTHCHECK_SAMPLE        = 500       # was 300 — sample more per pool
 
     GOOGLE_CAPTCHA_PATTERNS = [
         'google.com/sorry',
@@ -68,7 +57,7 @@ class FreeProxyRotatorMiddleware:
 
         pools = {'socks4': [], 'socks5': [], 'http': []}
 
-        # 1) Parse manual_proxies.txt
+        # 1) Manual file
         manual_file = os.environ.get('MANUAL_PROXY_FILE', 'manual_proxies.txt')
         if os.path.isfile(manual_file):
             parsed = cls._parse_manual_file(manual_file)
@@ -77,7 +66,7 @@ class FreeProxyRotatorMiddleware:
             total = sum(len(v) for v in parsed.values())
             logger.info(f"Manual proxies: {total}")
 
-        # 2) env
+        # 2) MANUAL_PROXIES env (comma or newline-separated)
         manual_env = os.environ.get('MANUAL_PROXIES', '').strip()
         if manual_env:
             for p in re.split(r'[,\n]', manual_env):
@@ -85,9 +74,13 @@ class FreeProxyRotatorMiddleware:
                 if p:
                     pools['http'].append(p)
 
-        # 3) Remote HTTP sources
+        # 3) Remote sources
         if os.environ.get('FETCH_REMOTE_PROXIES', 'true').lower() == 'true':
-            for url in cls.HTTP_SOURCES:
+            sources = list(cls.HTTP_SOURCES)
+            extra = os.environ.get('FREE_PROXY_LIST_URL', '').strip()
+            if extra and extra not in sources:
+                sources.insert(0, extra)
+            for url in sources:
                 try:
                     r = requests.get(url, timeout=15)
                     r.raise_for_status()
@@ -108,7 +101,8 @@ class FreeProxyRotatorMiddleware:
         for k in pools:
             random.shuffle(pools[k])
 
-        healthcheck = os.environ.get('PROXY_HEALTHCHECK', 'false').lower() == 'true'
+        # 4) Optional pre-flight healthcheck
+        healthcheck = os.environ.get('PROXY_HEALTHCHECK', 'true').lower() == 'true'
         if healthcheck:
             for k in pools:
                 if pools[k]:
@@ -122,13 +116,11 @@ class FreeProxyRotatorMiddleware:
     def _parse_manual_file(cls, path):
         pools = {'socks4': [], 'socks5': [], 'http': []}
         current_scheme = 'http'
-
         with open(path, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
-
                 if line.startswith('#'):
                     lower = line.lower()
                     if 'socks4' in lower or 'socks 4' in lower:
@@ -138,7 +130,6 @@ class FreeProxyRotatorMiddleware:
                     elif 'http' in lower:
                         current_scheme = 'http'
                     continue
-
                 if '://' in line:
                     scheme = line.split('://', 1)[0].lower()
                     if scheme in ('socks4', 'socks4a'):
@@ -148,14 +139,12 @@ class FreeProxyRotatorMiddleware:
                     else:
                         pools['http'].append(line)
                     continue
-
                 if current_scheme == 'socks4':
                     pools['socks4'].append(f"socks4://{line}")
                 elif current_scheme == 'socks5':
                     pools['socks5'].append(f"socks5h://{line}")
                 else:
                     pools['http'].append(line)
-
         return pools
 
     @classmethod
@@ -219,7 +208,6 @@ class FreeProxyRotatorMiddleware:
                 if self.pools[name]:
                     return name
         else:
-            # HTTPS: SOCKS5 -> SOCKS4 -> HTTP (allow SOCKS4 fallback)
             if self.socks_fail_count >= self.SOCKS_FAILS_BEFORE_HTTP:
                 if self.pools['http']:
                     return 'http'
