@@ -1,6 +1,7 @@
 # utils/browserstack_client.py
 # BrowserStack + Local Chrome with auto Chrome version detection,
-# real proxy verification (MV3 auth), anti-detection, and mobile emulation.
+# real proxy verification (MV3 auth), click verification, anti-detection,
+# and mobile emulation.
 # ==========================================================================
 import os
 import re
@@ -12,6 +13,7 @@ import logging
 import tempfile
 import zipfile
 import subprocess
+from urllib.parse import urlparse
 
 import requests
 
@@ -39,6 +41,25 @@ AZURE_DATACENTER_KEYWORDS = (
     'azure', 'microsoft', 'cloudapp', 'github',
     'amazon', 'aws', 'google cloud', 'digitalocean',
 )
+
+# Revenue network keyword map — used by verify_click_result
+REVENUE_NETWORKS = {
+    'monetag': [
+        'effectivecpmnetwork', 'highperformanceformat',
+        'highrevenueformat', 'profitableratecpmnetwork', 'quge5.com',
+    ],
+    'adsterra': ['adsterra.com', 'www.adsterra.com'],
+    'propellerads': ['propellerads', 'propeller-ads', 'onclickalgo',
+                     'onclickmega', 'onclckds'],
+    'google_adsense': ['googlesyndication', 'doubleclick',
+                       'googleadservices', 'google.com/pagead'],
+    'mgid': ['mgid.com'],
+    'taboola': ['taboola.com'],
+    'outbrain': ['outbrain.com'],
+    'popads': ['popads.net', 'popcash.net'],
+    'media_net': ['media.net', 'media-net'],
+    'revcontent': ['revcontent.com'],
+}
 
 
 # ============================================================
@@ -103,6 +124,7 @@ def detect_chrome_version():
     """Auto-detect installed Chrome major version."""
     candidates = [
         os.environ.get('CHROME_BIN', ''),
+        '/opt/hostedtoolcache/setup-chrome/chrome/stable/x64/chrome',
         '/usr/local/bin/google-chrome',
         '/usr/bin/google-chrome',
         '/usr/bin/google-chrome-stable',
@@ -161,8 +183,7 @@ def parse_proxy_url(proxy_url):
 def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, scheme='http'):
     """
     Create a Chrome extension (manifest v3) that sets the proxy and injects
-    auth credentials. Returns the path to the UNPACKED extension directory
-    so it can be loaded with --load-extension.
+    auth credentials. Returns the path to the UNPACKED extension directory.
     """
     manifest_json = """
     {
@@ -399,7 +420,7 @@ class ResourceBlocker:
 
 
 # ============================================================
-# BrowserStack Client (cloud)
+# BrowserStack Client (cloud) + Click verification helpers
 # ============================================================
 class BrowserStackClient:
     AD_SELECTORS = [
@@ -488,6 +509,94 @@ class BrowserStackClient:
             'device_name': 'Desktop',
             'max_touch_points': 0,
         }
+
+    # ---------- Click verification ----------
+    @staticmethod
+    def _identify_network(domain):
+        """Map a destination domain to an ad network name."""
+        if not domain:
+            return None
+        d = domain.lower()
+        for network, keywords in REVENUE_NETWORKS.items():
+            if any(kw in d for kw in keywords):
+                return network
+        return 'unknown'
+
+    def verify_click_result(self, pre_handles, pre_url, timeout=8):
+        """
+        After a click, check:
+          - Was a new tab opened?
+          - What's the destination URL / domain?
+          - Which revenue network was reached?
+          - What HTTP status?
+        Leaves any new tab OPEN (let caller close it after post_wait
+        so ad networks can register the click).
+        """
+        result = {
+            'new_tab': False,
+            'destination_url': None,
+            'destination_domain': None,
+            'http_status': None,
+            'revenue_network': None,
+        }
+
+        # Poll for new tab (up to `timeout` seconds)
+        start = time.time()
+        new_handles = []
+        while time.time() - start < timeout:
+            try:
+                post_handles = self.driver.window_handles
+            except Exception:
+                time.sleep(0.5)
+                continue
+            new_handles = [h for h in post_handles if h not in pre_handles]
+            if new_handles:
+                break
+            time.sleep(0.5)
+
+        original_handle = pre_handles[0] if pre_handles else None
+
+        if new_handles:
+            result['new_tab'] = True
+            try:
+                self.driver.switch_to.window(new_handles[0])
+                time.sleep(random.uniform(1.5, 3.0))
+                result['destination_url'] = self.driver.current_url
+                parsed = urlparse(result['destination_url'])
+                result['destination_domain'] = parsed.netloc
+                result['revenue_network'] = self._identify_network(parsed.netloc)
+
+                try:
+                    status = self.driver.execute_script(
+                        "return (window.performance && "
+                        "window.performance.getEntriesByType('navigation')[0] "
+                        "&& window.performance.getEntriesByType('navigation')[0].responseStatus) "
+                        "|| null;"
+                    )
+                    result['http_status'] = status
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.debug(f"[CLICK-VERIFY] read failed: {e}")
+            finally:
+                try:
+                    if original_handle:
+                        self.driver.switch_to.window(original_handle)
+                except Exception:
+                    pass
+        else:
+            # No new tab — maybe same-tab redirect
+            try:
+                current_url = self.driver.current_url
+                if current_url and current_url != pre_url:
+                    result['destination_url'] = current_url
+                    parsed = urlparse(current_url)
+                    result['destination_domain'] = parsed.netloc
+                    result['revenue_network'] = self._identify_network(parsed.netloc)
+            except Exception:
+                pass
+
+        return result
 
     # ---------- BrowserStack cloud session ----------
     def start_session(self, url, browser='chrome', os_name='Windows', os_version='11',
@@ -772,10 +881,7 @@ class LocalBrowserClient(BrowserStackClient):
         return None
 
     def _verify_proxy_effective(self, proxy_url):
-        """
-        Verify that the browser is truly going through the proxy.
-        Returns True if the proxy is effective, False if bypassed or dead.
-        """
+        """Verify that the browser is truly going through the proxy."""
         if self.driver is None:
             logger.error("[PROXY-CHECK] Driver is None")
             return False
@@ -837,10 +943,6 @@ class LocalBrowserClient(BrowserStackClient):
         vw, vh = fp.get('viewport', (412, 915))
         locale = fp.get('locale', 'en-US')
 
-        # ---------- Headless vs xvfb ----------
-        # إذا كان DISPLAY موجوداً (xvfb)، لا نستخدم --headless=new لأن:
-        # 1) يتعارض مع تحميل الإضافات
-        # 2) قد يسبب انهيار Chrome
         display_present = os.environ.get('DISPLAY') is not None
         if headless and not display_present:
             options.add_argument('--headless=new')
@@ -848,7 +950,6 @@ class LocalBrowserClient(BrowserStackClient):
         else:
             logger.info(f"Using xvfb display (DISPLAY={os.environ.get('DISPLAY')})")
 
-        # ---------- Base flags ----------
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
@@ -862,7 +963,7 @@ class LocalBrowserClient(BrowserStackClient):
         options.add_argument('--log-level=3')
         options.add_argument(f'--user-agent={fp.get("user_agent", "")}')
 
-        # ---------- Speed-up flags ----------
+        # Speed-up flags
         options.add_argument('--disable-background-networking')
         options.add_argument('--disable-background-timer-throttling')
         options.add_argument('--disable-client-side-phishing-detection')
@@ -884,7 +985,7 @@ class LocalBrowserClient(BrowserStackClient):
             'CalculateNativeWinOcclusion'
         )
 
-        # ---------- Proxy (Manifest V3) ----------
+        # Proxy (MV3)
         if proxy:
             parsed = parse_proxy_url(proxy)
             if parsed:
@@ -906,7 +1007,6 @@ class LocalBrowserClient(BrowserStackClient):
                         options.add_argument(
                             f'--disable-extensions-except={self._extension_path}'
                         )
-                        # Chrome 137+ يعطل --load-extension افتراضياً
                         options.add_argument(
                             '--disable-features=DisableLoadExtensionCommandLineSwitch'
                         )
@@ -926,9 +1026,7 @@ class LocalBrowserClient(BrowserStackClient):
                     )
                     logger.info(f"Proxy without auth: {scheme}://{host}:{port}")
 
-        # ---------- Driver creation ----------
-        # ملاحظة: uc.Chrome يعدّل الـ options داخلياً، لذا نمرر deepcopy
-        # لمنع خطأ "you cannot reuse the ChromeOptions object" عند retry.
+        # Driver creation
         driver = None
         chrome_version = detect_chrome_version()
 
@@ -984,7 +1082,6 @@ class LocalBrowserClient(BrowserStackClient):
 
         self.driver = driver
 
-        # ---------- Anti-detection ----------
         CDPSpoofer.apply(self.driver, fp)
         ResourceBlocker.setup(self.driver, mode=block_resources)
 
@@ -1003,7 +1100,6 @@ class LocalBrowserClient(BrowserStackClient):
         self.driver.set_page_load_timeout(60)
         self.driver.set_script_timeout(30)
 
-        # ---------- Proxy verification (BLOCKING) ----------
         if proxy:
             self.driver.set_page_load_timeout(25)
             try:
@@ -1028,7 +1124,6 @@ class LocalBrowserClient(BrowserStackClient):
                     "Check that Chrome extensions load in headless mode."
                 )
 
-        # ---------- Navigate to target ----------
         self.driver.get(url)
         self.wait_for_page_load(timeout=30)
         return self.driver
