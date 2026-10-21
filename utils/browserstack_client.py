@@ -1,11 +1,12 @@
 # utils/browserstack_client.py
 # BrowserStack + Local Chrome with auto Chrome version detection,
-# real proxy verification, anti-detection, and mobile emulation.
+# real proxy verification (MV3 auth), anti-detection, and mobile emulation.
 # ==========================================================================
 import os
 import re
 import time
 import json
+import copy
 import random
 import logging
 import tempfile
@@ -101,7 +102,8 @@ ANDROID_DEVICES = [
 def detect_chrome_version():
     """Auto-detect installed Chrome major version."""
     candidates = [
-        os.environ.get('CHROME_BIN', '/usr/local/bin/google-chrome'),
+        os.environ.get('CHROME_BIN', ''),
+        '/usr/local/bin/google-chrome',
         '/usr/bin/google-chrome',
         '/usr/bin/google-chrome-stable',
         '/opt/google/chrome/chrome',
@@ -835,8 +837,16 @@ class LocalBrowserClient(BrowserStackClient):
         vw, vh = fp.get('viewport', (412, 915))
         locale = fp.get('locale', 'en-US')
 
-        if headless:
+        # ---------- Headless vs xvfb ----------
+        # إذا كان DISPLAY موجوداً (xvfb)، لا نستخدم --headless=new لأن:
+        # 1) يتعارض مع تحميل الإضافات
+        # 2) قد يسبب انهيار Chrome
+        display_present = os.environ.get('DISPLAY') is not None
+        if headless and not display_present:
             options.add_argument('--headless=new')
+            logger.info("Using --headless=new (no DISPLAY detected)")
+        else:
+            logger.info(f"Using xvfb display (DISPLAY={os.environ.get('DISPLAY')})")
 
         # ---------- Base flags ----------
         options.add_argument('--no-sandbox')
@@ -852,7 +862,7 @@ class LocalBrowserClient(BrowserStackClient):
         options.add_argument('--log-level=3')
         options.add_argument(f'--user-agent={fp.get("user_agent", "")}')
 
-        # ---------- Speed-up flags (save ~30s per launch) ----------
+        # ---------- Speed-up flags ----------
         options.add_argument('--disable-background-networking')
         options.add_argument('--disable-background-timer-throttling')
         options.add_argument('--disable-client-side-phishing-detection')
@@ -890,14 +900,13 @@ class LocalBrowserClient(BrowserStackClient):
                             proxy_host=host, proxy_port=port,
                             proxy_user=user, proxy_pass=pass_, scheme=scheme,
                         )
-                        # Load unpacked extension directory (MV3)
                         options.add_argument(
                             f'--load-extension={self._extension_path}'
                         )
                         options.add_argument(
                             f'--disable-extensions-except={self._extension_path}'
                         )
-                        # Required since Chrome 137 to allow --load-extension
+                        # Chrome 137+ يعطل --load-extension افتراضياً
                         options.add_argument(
                             '--disable-features=DisableLoadExtensionCommandLineSwitch'
                         )
@@ -918,6 +927,8 @@ class LocalBrowserClient(BrowserStackClient):
                     logger.info(f"Proxy without auth: {scheme}://{host}:{port}")
 
         # ---------- Driver creation ----------
+        # ملاحظة: uc.Chrome يعدّل الـ options داخلياً، لذا نمرر deepcopy
+        # لمنع خطأ "you cannot reuse the ChromeOptions object" عند retry.
         driver = None
         chrome_version = detect_chrome_version()
 
@@ -929,19 +940,24 @@ class LocalBrowserClient(BrowserStackClient):
             try:
                 if chrome_version:
                     driver = uc.Chrome(
-                        options=options, use_subprocess=True,
+                        options=copy.deepcopy(options),
+                        use_subprocess=True,
                         version_main=chrome_version,
                     )
                 else:
-                    driver = uc.Chrome(options=options, use_subprocess=True)
+                    driver = uc.Chrome(
+                        options=copy.deepcopy(options), use_subprocess=True,
+                    )
                 logger.info("undetected-chromedriver started successfully")
             except Exception as e:
                 logger.warning(
                     f"uc.Chrome(version_main={chrome_version}) failed: {e}"
                 )
                 try:
-                    logger.info("Retrying uc.Chrome without version_main")
-                    driver = uc.Chrome(options=options, use_subprocess=True)
+                    logger.info("Retrying uc.Chrome with fresh options")
+                    driver = uc.Chrome(
+                        options=copy.deepcopy(options), use_subprocess=True,
+                    )
                     logger.info("undetected-chromedriver started (fallback)")
                 except Exception as e2:
                     logger.warning(f"uc.Chrome fallback failed: {e2}")
@@ -952,18 +968,14 @@ class LocalBrowserClient(BrowserStackClient):
 
         if driver is None:
             logger.info("Using plain Chrome with system ChromeDriver")
-            chrome_bin = os.environ.get(
-                'CHROME_BIN', '/usr/local/bin/google-chrome'
-            )
+            chrome_bin = os.environ.get('CHROME_BIN', '/usr/local/bin/google-chrome')
             if os.path.exists(chrome_bin):
                 options.binary_location = chrome_bin
 
             self._profile_dir = tempfile.mkdtemp(prefix='chrome_profile_')
             options.add_argument(f'--user-data-dir={self._profile_dir}')
 
-            cd_path = os.environ.get(
-                'CHROMEDRIVER_PATH', '/usr/local/bin/chromedriver'
-            )
+            cd_path = os.environ.get('CHROMEDRIVER_PATH', '/usr/local/bin/chromedriver')
             if os.path.exists(cd_path):
                 service = Service(executable_path=cd_path)
                 driver = webdriver.Chrome(service=service, options=options)
@@ -1013,7 +1025,7 @@ class LocalBrowserClient(BrowserStackClient):
                 self.driver = None
                 raise RuntimeError(
                     "Proxy not effective — aborted to save quota. "
-                    "Check that Chrome extensions load in headless=new mode."
+                    "Check that Chrome extensions load in headless mode."
                 )
 
         # ---------- Navigate to target ----------
