@@ -46,9 +46,8 @@ class BrowserStackSpider(scrapy.Spider):
 
     MAX_AD_CLICKS_PER_SESSION = int(os.getenv('MAX_ADS_PER_SESSION', '2'))
 
-    # FIX: was 0.6 — caused attempts=0 in 40% of sessions.
-    # "Human" behavior comes from timing/randomness WITHIN the click
-    # sequence, not from skipping the sequence entirely.
+    # 100% click attempt — human-ness comes from timing/randomness,
+    # not from skipping the sequence entirely.
     CLICK_PROBABILITY = 1.0
 
     TIME_BEFORE_FIRST_CLICK_MIN = 45
@@ -68,12 +67,13 @@ class BrowserStackSpider(scrapy.Spider):
     INTERNAL_MAX_CLICKS = 1
 
     ADS_WAIT_MAX = 40
-    ADSENSE_IFRAME_WAIT = 30
+
+    # FIX: AdSense is not approved on the site yet — 30s per page is wasted.
+    # When AdSense gets approved, bump this back to 25-30.
+    ADSENSE_IFRAME_WAIT = 5
 
     # ============================================================
-    # Skip boring paths (privacy, about, contact…) — normalised:
-    # lowercase, .html stripped, trailing / stripped.
-    # VPN landing (/p/best-vpn-for-privacy-...) is NOT matched.
+    # Skip boring paths (privacy, about, contact…)
     # ============================================================
     BORING_PATHS = {
         '/privacy', '/privacy-policy', '/privacy-notice',
@@ -89,6 +89,25 @@ class BrowserStackSpider(scrapy.Spider):
         '/p/disclaimer', '/p/disclaimer.html',
         '/p/sitemap', '/p/sitemap.html',
     }
+
+    # ============================================================
+    # Ad network domains — never treat as internal links
+    # (FIX: previous code matched these because they contained
+    #  "forjo.tech" in the refer= parameter)
+    # ============================================================
+    AD_NETWORKS = (
+        'monetag', 'propellerads', 'adsterra', 'onclickalgo',
+        'onclickmega', 'onclckds', 'effectivecpmnetwork',
+        'highrevenueformat', 'highperformanceformat',
+        'profitableratecpmnetwork', 'quge5',
+        'quarrelsomebitter', 'difficultblock',
+        'bicea.org', 'afders.org', 'spendsdetachment',
+        'uplcm.com', 'omg10.com', 'asiafilm.org',
+        'nthefeetofthea', 'viiukuhe', 'ad-maven',
+        'popads', 'popcash', 'mgid', 'taboola',
+        'outbrain', 'revcontent',
+        'doubleclick', 'googlesyndication', 'googleadservices',
+    )
 
     def __init__(self, target_url=None, use_browserstack='true', *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -150,6 +169,7 @@ class BrowserStackSpider(scrapy.Spider):
         self.logger.info(f"   Dwell (main): {self.DWELL_TIME_MIN}-{self.DWELL_TIME_MAX}s")
         self.logger.info(f"   Dwell (internal): {self.INTERNAL_DWELL_MIN}-{self.INTERNAL_DWELL_MAX}s")
         self.logger.info(f"   Click probability: {self.CLICK_PROBABILITY}")
+        self.logger.info(f"   AdSense iframe wait: {self.ADSENSE_IFRAME_WAIT}s")
         self.logger.info(f"   Strategies: adsense → adsterra → container → iframe → ezoic")
 
         if self.use_browserstack:
@@ -510,7 +530,7 @@ class BrowserStackSpider(scrapy.Spider):
         self.logger.warning(f"[ADS] No ads found after {self.ADS_WAIT_MAX}s")
         return False
 
-    def _wait_for_adsense_iframe(self, timeout=30):
+    def _wait_for_adsense_iframe(self, timeout=5):
         try:
             units = self.client.driver.find_elements(By.CSS_SELECTOR, 'ins.adsbygoogle')
             if not units:
@@ -1028,7 +1048,10 @@ class BrowserStackSpider(scrapy.Spider):
         return False, None
 
     # ============================================================
-    # Internal link discovery (with BORING_PATHS filter)
+    # Internal link discovery
+    # FIX: match netloc exactly (previous version matched substring,
+    # which let ad network URLs through because they contained
+    # "forjo.tech" inside a refer= parameter)
     # ============================================================
     def _pick_internal_link_url(self):
         try:
@@ -1036,6 +1059,8 @@ class BrowserStackSpider(scrapy.Spider):
 
             skip_substrings = [
                 '/tag/', '/label/', '/search', '/feed', '/archive',
+                '/privacy', '/about', '/contact', '/terms', '/disclaimer',
+                '/sitemap', '/p/about', '/p/privacy', '/p/contact',
                 'facebook.com', 'twitter.com', 'instagram.com',
                 'youtube.com', 'whatsapp', 't.me', 'telegram',
                 'mailto:', 'javascript:',
@@ -1074,20 +1099,28 @@ class BrowserStackSpider(scrapy.Spider):
                         href = link.get_attribute('href') or ''
                         if not href:
                             continue
-                        if target_domain not in href:
+
+                        # ---- FIX: check actual netloc, not substring ----
+                        parsed_href = urlparse(href)
+                        if parsed_href.netloc != target_domain:
                             continue
+
                         if href in self._visited_urls:
                             continue
 
                         lower_href = href.lower()
+
+                        # ---- FIX: exclude any URL mentioning an ad network ----
+                        if any(ad in lower_href for ad in self.AD_NETWORKS):
+                            continue
+
                         if any(s in lower_href for s in skip_substrings):
                             continue
 
-                        # NEW: skip privacy/about/contact pages
                         if self._is_boring_path(href):
                             continue
 
-                        path = urlparse(href).path
+                        path = parsed_href.path
                         if len(path) < 5 or path.strip('/') == '':
                             continue
                         candidates.append(href)
