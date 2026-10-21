@@ -84,7 +84,7 @@ jobs:
           retention-days: 3
 
   # ============================================================
-  # 2) LOCAL CHROME (setup-chrome guarantees matching versions)
+  # 2) LOCAL CHROME (setup-chrome with clean version matching)
   # ============================================================
   run-local-browser-spider:
     name: Local #${{ matrix.attempt }}
@@ -108,7 +108,19 @@ jobs:
           cache: 'pip'
 
       # ------------------------------------------------------------
-      # إصلاح جذري: تثبيت Chrome + ChromeDriver متطابقين تماماً
+      # 1) إزالة أي نسخة قديمة من Chrome/ChromeDriver
+      #    (صور GitHub Actions تحتوي نسخة 155 مثبتة مسبقاً)
+      # ------------------------------------------------------------
+      - name: Remove pre-installed Chrome and ChromeDriver
+        run: |
+          sudo apt-get remove -y google-chrome-stable 2>/dev/null || true
+          sudo rm -f /usr/bin/google-chrome /usr/bin/google-chrome-stable
+          sudo rm -f /usr/bin/chromedriver /usr/local/bin/chromedriver
+          sudo rm -rf /opt/google/chrome
+          echo "Old Chrome/ChromeDriver removed (if any)"
+
+      # ------------------------------------------------------------
+      # 2) تثبيت Chrome + ChromeDriver متطابقين
       # ------------------------------------------------------------
       - name: Setup Chrome (stable) with matching ChromeDriver
         id: setup-chrome
@@ -118,36 +130,48 @@ jobs:
           install-chromedriver: 'true'
           install-dependencies: 'true'
 
+      # ------------------------------------------------------------
+      # 3) التحقق من التطابق + تصدير المسارات
+      # ------------------------------------------------------------
       - name: Verify Chrome/ChromeDriver versions match
         run: |
           set -e
-          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
-          DRIVER_VERSION=$(chromedriver --version | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1)
+          CHROME_PATH="${{ steps.setup-chrome.outputs.chrome-path }}"
+          DRIVER_PATH=$(which chromedriver)
+
+          echo "Chrome path from setup-chrome: $CHROME_PATH"
+          echo "ChromeDriver path: $DRIVER_PATH"
+
+          CHROME_VERSION=$("$CHROME_PATH" --version | grep -oP '\d+\.\d+\.\d+\.\d+')
+          DRIVER_VERSION=$("$DRIVER_PATH" --version | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1)
+
           echo "Chrome:        $CHROME_VERSION"
           echo "ChromeDriver:  $DRIVER_VERSION"
+
           CHROME_MAJOR=$(echo $CHROME_VERSION | cut -d. -f1)
           DRIVER_MAJOR=$(echo $DRIVER_VERSION | cut -d. -f1)
+
           if [ "$CHROME_MAJOR" != "$DRIVER_MAJOR" ]; then
-            echo "❌ MAJOR VERSION MISMATCH: Chrome=$CHROME_MAJOR vs Driver=$DRIVER_MAJOR"
+            echo "❌ MISMATCH: Chrome=$CHROME_MAJOR vs Driver=$DRIVER_MAJOR"
             exit 1
           fi
+
           echo "✅ Versions match"
-          echo "google-chrome path: $(which google-chrome)"
-          echo "chromedriver path:  $(which chromedriver)"
-          echo "CHROME_BIN=$(which google-chrome)" >> $GITHUB_ENV
-          echo "CHROMEDRIVER_PATH=$(which chromedriver)" >> $GITHUB_ENV
+          echo "CHROME_BIN=$CHROME_PATH" >> $GITHUB_ENV
+          echo "CHROMEDRIVER_PATH=$DRIVER_PATH" >> $GITHUB_ENV
 
       # ------------------------------------------------------------
-      # xvfb + مكتبات النظام
+      # 4) مكتبات النظام + xvfb
       # ------------------------------------------------------------
       - name: Install xvfb and system libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb libnss3 libgbm1 libasound2t64 2>/dev/null || \
-            sudo apt-get install -y xvfb libnss3 libgbm1 libasound2
+          sudo apt-get install -y xvfb libnss3 libgbm1
+          sudo apt-get install -y libasound2t64 2>/dev/null || \
+            sudo apt-get install -y libasound2
 
       # ------------------------------------------------------------
-      # Cache uc binaries
+      # 5) Cache uc binaries
       # ------------------------------------------------------------
       - name: Cache undetected-chromedriver binaries
         uses: actions/cache@v4
@@ -157,6 +181,9 @@ jobs:
           restore-keys: |
             uc-chromedriver-${{ runner.os }}-
 
+      # ------------------------------------------------------------
+      # 6) تثبيت تبعيات Python
+      # ------------------------------------------------------------
       - name: Install Python deps
         run: |
           pip install --upgrade pip
@@ -164,17 +191,15 @@ jobs:
           pip install --no-cache-dir -r requirements.txt
 
       # ------------------------------------------------------------
-      # تشغيل العنكبوت
+      # 7) تشغيل العنكبوت تحت xvfb (بدون --headless=new)
       # ------------------------------------------------------------
       - name: Run Local
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
-          # CHROME_BIN و CHROMEDRIVER_PATH مضبوطان من خطوة setup-chrome
           USE_PROXY_WITH_BROWSER: 'true'
           PROXY_HEALTHCHECK: 'true'
           MANUAL_PROXY_FILE: 'manual_proxies.txt'
-          # تحت xvfb لا نضيف --headless=new (تجنب تعارض الإضافات)
           DISPLAY_MODE: 'xvfb'
         run: |
           xvfb-run -a scrapy crawl browserstack_bot \
