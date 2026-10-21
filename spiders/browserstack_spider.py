@@ -1,7 +1,5 @@
 # spiders/browserstack_spider.py
-# Multi-page slow click mode with full ad network coverage:
-# AdSense, Adsterra (banners + native + iframes), Monetag, Ezoic, MGID,
-# Taboola, Outbrain. Includes click verification and AdSense hunting.
+# Multi-page slow click mode with full ad network coverage.
 # ==========================================================================
 import os
 import re
@@ -47,7 +45,12 @@ class BrowserStackSpider(scrapy.Spider):
     READ_TIME_MAX = 60
 
     MAX_AD_CLICKS_PER_SESSION = int(os.getenv('MAX_ADS_PER_SESSION', '2'))
-    CLICK_PROBABILITY = 0.6
+
+    # FIX: was 0.6 — caused attempts=0 in 40% of sessions.
+    # "Human" behavior comes from timing/randomness WITHIN the click
+    # sequence, not from skipping the sequence entirely.
+    CLICK_PROBABILITY = 1.0
+
     TIME_BEFORE_FIRST_CLICK_MIN = 45
     TIME_BEFORE_FIRST_CLICK_MAX = 90
     TIME_BETWEEN_CLICKS_MIN = 10
@@ -66,6 +69,26 @@ class BrowserStackSpider(scrapy.Spider):
 
     ADS_WAIT_MAX = 40
     ADSENSE_IFRAME_WAIT = 30
+
+    # ============================================================
+    # Skip boring paths (privacy, about, contact…) — normalised:
+    # lowercase, .html stripped, trailing / stripped.
+    # VPN landing (/p/best-vpn-for-privacy-...) is NOT matched.
+    # ============================================================
+    BORING_PATHS = {
+        '/privacy', '/privacy-policy', '/privacy-notice',
+        '/about', '/about-us',
+        '/contact', '/contact-us',
+        '/terms', '/terms-of-service', '/terms-and-conditions',
+        '/disclaimer', '/legal', '/cookie-policy', '/cookies', '/tos',
+        '/sitemap', '/sitemap.xml',
+        '/p/privacy', '/p/privacy-policy', '/p/privacy-policy.html',
+        '/p/about', '/p/about-us', '/p/about-us.html',
+        '/p/contact', '/p/contact-us', '/p/contact-us.html',
+        '/p/terms', '/p/terms-of-service', '/p/terms-of-service.html',
+        '/p/disclaimer', '/p/disclaimer.html',
+        '/p/sitemap', '/p/sitemap.html',
+    }
 
     def __init__(self, target_url=None, use_browserstack='true', *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -99,6 +122,20 @@ class BrowserStackSpider(scrapy.Spider):
         self._proxy_provider = None
 
     # ============================================================
+    # Path filter
+    # ============================================================
+    def _is_boring_path(self, url):
+        try:
+            path = urlparse(url).path.lower()
+            path = path.rstrip('/')
+            if path.endswith('.html'):
+                path = path[:-5]
+            path = path.rstrip('/')
+            return path in self.BORING_PATHS
+        except Exception:
+            return False
+
+    # ============================================================
     # Entry point
     # ============================================================
     def start_requests(self):
@@ -112,6 +149,7 @@ class BrowserStackSpider(scrapy.Spider):
         self.logger.info(f"   Max clicks (internal): {self.INTERNAL_MAX_CLICKS}")
         self.logger.info(f"   Dwell (main): {self.DWELL_TIME_MIN}-{self.DWELL_TIME_MAX}s")
         self.logger.info(f"   Dwell (internal): {self.INTERNAL_DWELL_MIN}-{self.INTERNAL_DWELL_MAX}s")
+        self.logger.info(f"   Click probability: {self.CLICK_PROBABILITY}")
         self.logger.info(f"   Strategies: adsense → adsterra → container → iframe → ezoic")
 
         if self.use_browserstack:
@@ -289,10 +327,8 @@ class BrowserStackSpider(scrapy.Spider):
         page_stats['reading_time'] = int(time.time() - start)
         self.reading_time += page_stats['reading_time']
 
-        # Count all ad types
         self.ads_visible_counts = self._count_visible_ads()
 
-        # AdSense hunting
         adsense_info = self.ads_visible_counts.get('adsense', {})
         if adsense_info.get('total', 0) > 0 and adsense_info.get('visible', 0) == 0:
             self.logger.info(
@@ -378,37 +414,27 @@ class BrowserStackSpider(scrapy.Spider):
         return page_stats
 
     # ============================================================
-    # Ad detection — separates Adsterra from Monetag
+    # Ad detection
     # ============================================================
     def _count_visible_ads(self):
         counts = {}
         specs = {
             'adsense': 'ins.adsbygoogle',
-
-            # Adsterra Native Banner (this is what we USED to call "container")
             'adsterra_native': 'div[id^="container-"]',
-
-            # Adsterra direct banners (anchor tags)
             'adsterra_banner_link': (
                 'a[href*="adsterra"], '
                 'a[href*="adsterra.net"], '
                 'a[href*="adsterra.org"]'
             ),
-
-            # Adsterra iframe banners
             'adsterra_iframe': (
                 'iframe[src*="adsterra"], '
                 'iframe[src*="adsterra.net"], '
                 'iframe[src*="adsterra.org"]'
             ),
-
-            # Adsterra display divs
             'adsterra_div': (
                 'div[class*="adsterra"], '
                 'div[id*="adsterra"]'
             ),
-
-            # Monetag iframes (highrevenueformat, effectivecpmnetwork, etc.)
             'monetag_iframe': (
                 'iframe[src*="highrevenueformat"], '
                 'iframe[src*="effectivecpmnetwork"], '
@@ -416,18 +442,12 @@ class BrowserStackSpider(scrapy.Spider):
                 'iframe[src*="highperformanceformat"], '
                 'iframe[src*="quge5"]'
             ),
-
-            # Generic advertisement divs (may include Adsterra)
             'generic_ad': (
                 'div[class*="advertisement"], '
                 'div[id^="ad-"]'
             ),
-
-            # Ezoic placeholders
             'ezoic_placeholder': 'div[id^="ezoic-pub-ad-placeholder-"]',
             'ezoic_iframe': 'iframe[src*="ezoic"]',
-
-            # Native ad networks
             'mgid_widget': (
                 'div[class*="mgid"], '
                 'iframe[src*="mgid.com"]'
@@ -604,14 +624,6 @@ class BrowserStackSpider(scrapy.Spider):
         )
 
     def _try_all_strategies(self):
-        """
-        Order matters — highest CPC first:
-          1. AdSense        (best CPM, needs iframe to load)
-          2. Adsterra       (popunder, banners, native)
-          3. Container      (Adsterra native banner div)
-          4. Iframe         (Monetag iframe)
-          5. Ezoic          (fallback, requires site to use Ezoic)
-        """
         for name, method in [
             ('adsense',   self._try_adsense),
             ('adsterra',  self._try_adsterra),
@@ -712,15 +724,9 @@ class BrowserStackSpider(scrapy.Spider):
         return False, None
 
     # ------------------------------------------------------------
-    # Strategy 2: Adsterra (banners, native, iframes)
+    # Strategy 2: Adsterra
     # ------------------------------------------------------------
     def _try_adsterra(self):
-        """
-        Adsterra uses several formats. We try in order:
-          1. Direct <a href*="adsterra"> banner links
-          2. <iframe src*="adsterra"> iframes
-          3. <div class*="adsterra"> display containers
-        """
         try:
             # 1) Direct banner links
             banner_links = self.client.driver.find_elements(
@@ -856,9 +862,6 @@ class BrowserStackSpider(scrapy.Spider):
 
     # ------------------------------------------------------------
     # Strategy 3: Container (Adsterra Native Banner)
-    # NOTE: div[id^="container-"] is Adsterra Native Banner
-    # The strategy is named "container" to keep backward compatibility
-    # but it's really Adsterra — the verification records this.
     # ------------------------------------------------------------
     def _try_container(self):
         try:
@@ -896,7 +899,7 @@ class BrowserStackSpider(scrapy.Spider):
                     continue
 
                 verification = self.client.verify_click_result(pre_handles, pre_url)
-                verification['strategy'] = 'container'  # Adsterra Native Banner
+                verification['strategy'] = 'container'
                 return True, verification
         except Exception as e:
             self.logger.debug(f"[CONTAINER] error: {e}")
@@ -953,13 +956,9 @@ class BrowserStackSpider(scrapy.Spider):
         return False, None
 
     # ------------------------------------------------------------
-    # Strategy 5: Ezoic (only if the site uses Ezoic)
+    # Strategy 5: Ezoic
     # ------------------------------------------------------------
     def _try_ezoic(self):
-        """
-        Ezoic placeholders look like:
-          <div id="ezoic-pub-ad-placeholder-103"> ... <iframe> ... </div>
-        """
         try:
             placeholders = self.client.driver.find_elements(
                 By.CSS_SELECTOR, 'div[id^="ezoic-pub-ad-placeholder-"]'
@@ -1029,7 +1028,7 @@ class BrowserStackSpider(scrapy.Spider):
         return False, None
 
     # ============================================================
-    # Internal link discovery
+    # Internal link discovery (with BORING_PATHS filter)
     # ============================================================
     def _pick_internal_link_url(self):
         try:
@@ -1079,8 +1078,15 @@ class BrowserStackSpider(scrapy.Spider):
                             continue
                         if href in self._visited_urls:
                             continue
-                        if any(s in href.lower() for s in skip_substrings):
+
+                        lower_href = href.lower()
+                        if any(s in lower_href for s in skip_substrings):
                             continue
+
+                        # NEW: skip privacy/about/contact pages
+                        if self._is_boring_path(href):
+                            continue
+
                         path = urlparse(href).path
                         if len(path) < 5 or path.strip('/') == '':
                             continue
