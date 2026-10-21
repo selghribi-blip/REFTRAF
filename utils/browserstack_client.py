@@ -42,23 +42,56 @@ AZURE_DATACENTER_KEYWORDS = (
     'amazon', 'aws', 'google cloud', 'digitalocean',
 )
 
-# Revenue network keyword map — used by verify_click_result
+# Revenue network keyword map — used by verify_click_result.
+# Ordered by specificity: affiliate destinations first, then ad networks.
 REVENUE_NETWORKS = {
+    # ----- Affiliate destinations (Monetag/Adsterra popunder targets) -----
+    # The `strategy` field on each verification tells us which network served
+    # the click (container=Monetag, adsterra_link=Adsterra, etc.).
+    'affiliate_offer': [
+        'aliexpress.com', 'alibaba.com', 'temu.com', 'shein.com',
+        'banggood.com', 'dhgate.com', 'wish.com', 'lightinthebox',
+        'amazon.com', 'amazon.co.uk', 'amazon.de', 'amazon.fr',
+        'amazon.it', 'amazon.es', 'ebay.com', 'allegro.pl',
+        'gearbest.com', 'tomtop.com',
+    ],
+    # ----- Gambling / betting (Monetag often serves these) -----
+    'gambling': [
+        '1xbet', 'bet365', 'betway', 'melbet', 'pin-up',
+        'mostbet', 'vulkan', 'betwinner', '22bet', 'parimatch',
+    ],
+    # ----- Dating / adult (Adsterra targets) -----
+    'dating': [
+        'tinder', 'badoo', 'chaturbate', 'onlyfans',
+        'adultfriendfinder', 'ashleymadison', 'flirt',
+    ],
+    # ----- Monetag / PropellerAds -----
     'monetag': [
         'effectivecpmnetwork', 'highperformanceformat',
-        'highrevenueformat', 'profitableratecpmnetwork', 'quge5.com',
+        'highrevenueformat', 'profitableratecpmnetwork',
+        'quge5.com', 'monetag.com', 'propellerads.com',
+        'propeller-ads.com', 'onclickalgo', 'onclickmega', 'onclckds',
     ],
-    'adsterra': ['adsterra.com', 'www.adsterra.com'],
-    'propellerads': ['propellerads', 'propeller-ads', 'onclickalgo',
-                     'onclickmega', 'onclckds'],
-    'google_adsense': ['googlesyndication', 'doubleclick',
-                       'googleadservices', 'google.com/pagead'],
+    # ----- Adsterra -----
+    'adsterra': [
+        'adsterra.com', 'adsterra.net', 'adsterra.org',
+        'www.adsterra.com', 'pixel.adsterra.com',
+    ],
+    # ----- Google AdSense -----
+    'google_adsense': [
+        'googlesyndication', 'doubleclick',
+        'googleadservices', 'google.com/pagead',
+    ],
+    # ----- Native ads -----
     'mgid': ['mgid.com'],
     'taboola': ['taboola.com'],
-    'outbrain': ['outbrain.com'],
-    'popads': ['popads.net', 'popcash.net'],
-    'media_net': ['media.net', 'media-net'],
+    'outbrain': ['outbrain.com', 'outbrain.net'],
     'revcontent': ['revcontent.com'],
+    # ----- Pop networks -----
+    'popads': ['popads.net', 'popcash.net'],
+    # ----- Other -----
+    'media_net': ['media.net', 'media-net'],
+    'ezoic': ['ezoic.com', 'ezojs.com', 'ezoic.net'],
 }
 
 
@@ -529,7 +562,7 @@ class BrowserStackClient:
           - What's the destination URL / domain?
           - Which revenue network was reached?
           - What HTTP status?
-        Leaves any new tab OPEN (let caller close it after post_wait
+        Leaves any new tab OPEN (caller closes it after post_wait
         so ad networks can register the click).
         """
         result = {
@@ -540,7 +573,6 @@ class BrowserStackClient:
             'revenue_network': None,
         }
 
-        # Poll for new tab (up to `timeout` seconds)
         start = time.time()
         new_handles = []
         while time.time() - start < timeout:
@@ -585,7 +617,6 @@ class BrowserStackClient:
                 except Exception:
                     pass
         else:
-            # No new tab — maybe same-tab redirect
             try:
                 current_url = self.driver.current_url
                 if current_url and current_url != pre_url:
