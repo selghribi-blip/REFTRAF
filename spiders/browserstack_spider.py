@@ -1,5 +1,7 @@
 # spiders/browserstack_spider.py
-# Multi-page slow click mode with click verification and AdSense hunting.
+# Multi-page slow click mode with full ad network coverage:
+# AdSense, Adsterra (banners + native + iframes), Monetag, Ezoic, MGID,
+# Taboola, Outbrain. Includes click verification and AdSense hunting.
 # ==========================================================================
 import os
 import re
@@ -40,15 +42,10 @@ class BrowserStackSpider(scrapy.Spider):
     # Tunable behavior
     # ============================================================
     USE_MOBILE = True
-
-    # Max pages per session (main + internal)
     MAX_PAGES_PER_SESSION = int(os.getenv('MAX_PAGES_PER_SESSION', '3'))
-
-    # Reading phase
     READ_TIME_MIN = 30
     READ_TIME_MAX = 60
 
-    # Click behavior
     MAX_AD_CLICKS_PER_SESSION = int(os.getenv('MAX_ADS_PER_SESSION', '2'))
     CLICK_PROBABILITY = 0.6
     TIME_BEFORE_FIRST_CLICK_MIN = 45
@@ -58,11 +55,9 @@ class BrowserStackSpider(scrapy.Spider):
     TIME_AFTER_CLICK_MIN = 15
     TIME_AFTER_CLICK_MAX = 30
 
-    # Dwell
     DWELL_TIME_MIN = int(os.getenv('DWELL_TIME_MIN', '180'))
     DWELL_TIME_MAX = int(os.getenv('DWELL_TIME_MAX', '300'))
 
-    # Internal-page overrides (shorter)
     INTERNAL_READ_MIN = 20
     INTERNAL_READ_MAX = 40
     INTERNAL_DWELL_MIN = 60
@@ -70,7 +65,7 @@ class BrowserStackSpider(scrapy.Spider):
     INTERNAL_MAX_CLICKS = 1
 
     ADS_WAIT_MAX = 40
-    ADSENSE_IFRAME_WAIT = 30  # was 15 — AdSense can take 20-25s on cold load
+    ADSENSE_IFRAME_WAIT = 30
 
     def __init__(self, target_url=None, use_browserstack='true', *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -78,7 +73,6 @@ class BrowserStackSpider(scrapy.Spider):
         self.use_browserstack = str(use_browserstack).lower() == 'true'
         self.client = None
 
-        # Session-level counters
         self.ads_clicked = 0
         self.forms_filled = 0
         self.proxy_used = None
@@ -88,7 +82,6 @@ class BrowserStackSpider(scrapy.Spider):
         self.reading_time = 0
         self.click_attempts = 0
 
-        # Diagnostics
         self.captcha_detected = False
         self.ads_detected_in_dom = False
         self.ads_visible_counts = {}
@@ -97,11 +90,12 @@ class BrowserStackSpider(scrapy.Spider):
         self.proxy_bypassed = False
         self.form_payload = None
 
-        # Navigation state
         self._visited_urls = set()
         self._tried_adsense = set()
+        self._tried_adsterra = set()
         self._tried_containers = set()
         self._tried_iframes = set()
+        self._tried_ezoic = set()
         self._proxy_provider = None
 
     # ============================================================
@@ -118,6 +112,7 @@ class BrowserStackSpider(scrapy.Spider):
         self.logger.info(f"   Max clicks (internal): {self.INTERNAL_MAX_CLICKS}")
         self.logger.info(f"   Dwell (main): {self.DWELL_TIME_MIN}-{self.DWELL_TIME_MAX}s")
         self.logger.info(f"   Dwell (internal): {self.INTERNAL_DWELL_MIN}-{self.INTERNAL_DWELL_MAX}s")
+        self.logger.info(f"   Strategies: adsense → adsterra → container → iframe → ezoic")
 
         if self.use_browserstack:
             user = os.environ.get('BROWSERSTACK_USERNAME', '').strip()
@@ -135,7 +130,7 @@ class BrowserStackSpider(scrapy.Spider):
         )
 
     # ============================================================
-    # Main flow — orchestrates multi-page session
+    # Main flow
     # ============================================================
     def parse_with_browser(self, response):
         status = 'unknown'
@@ -162,11 +157,9 @@ class BrowserStackSpider(scrapy.Spider):
 
             self._visited_urls.add(self.target_url)
 
-            # ---- Page 1: main target ----
             self.logger.info("[MAIN] Page 1 — target")
             pages_stats.append(self._run_page_phases(1, is_first=True))
 
-            # ---- Pages 2..N: internal ----
             for page_num in range(2, self.MAX_PAGES_PER_SESSION + 1):
                 next_url = self._pick_internal_link_url()
                 if not next_url:
@@ -251,7 +244,7 @@ class BrowserStackSpider(scrapy.Spider):
         }
 
     # ============================================================
-    # Run all phases on the CURRENTLY LOADED page
+    # Page phases
     # ============================================================
     def _run_page_phases(self, page_number, is_first=False):
         page_url = self.client.driver.current_url
@@ -268,10 +261,8 @@ class BrowserStackSpider(scrapy.Spider):
 
         self.logger.info(f"[PAGE {page_number}] URL: {page_url[:80]}")
 
-        # ---- Phase 1: settle ----
         time.sleep(random.uniform(3, 6))
 
-        # ---- Phase 2: reading ----
         if is_first:
             read_min, read_max = self.READ_TIME_MIN, self.READ_TIME_MAX
         else:
@@ -298,12 +289,14 @@ class BrowserStackSpider(scrapy.Spider):
         page_stats['reading_time'] = int(time.time() - start)
         self.reading_time += page_stats['reading_time']
 
-        # ---- Phase 3: count ads + AdSense hunting ----
+        # Count all ad types
         self.ads_visible_counts = self._count_visible_ads()
+
+        # AdSense hunting
         adsense_info = self.ads_visible_counts.get('adsense', {})
         if adsense_info.get('total', 0) > 0 and adsense_info.get('visible', 0) == 0:
             self.logger.info(
-                f"[PAGE {page_number}] AdSense present but no visible iframe — waiting up to {self.ADSENSE_IFRAME_WAIT}s"
+                f"[PAGE {page_number}] AdSense present but not visible — waiting up to {self.ADSENSE_IFRAME_WAIT}s"
             )
             waited = self._wait_for_adsense_iframe(timeout=self.ADSENSE_IFRAME_WAIT)
             page_stats['adsense_waited'] = waited
@@ -312,13 +305,11 @@ class BrowserStackSpider(scrapy.Spider):
 
         self.ads_detected_in_dom = self._wait_for_ads()
 
-        # ---- Phase 4: Monetag warm-up (first page only) ----
         if is_first and self.ads_detected_in_dom and \
            not self.ads_visible_counts.get('adsense', {}).get('visible', 0):
             self._trigger_monetag_once()
             time.sleep(random.uniform(2, 4))
 
-        # ---- Phase 5: wait before first click ----
         if is_first:
             wait_time = random.uniform(
                 self.TIME_BEFORE_FIRST_CLICK_MIN, self.TIME_BEFORE_FIRST_CLICK_MAX,
@@ -328,7 +319,6 @@ class BrowserStackSpider(scrapy.Spider):
         self.logger.info(f"[PAGE {page_number}] Waiting {wait_time:.0f}s before click")
         time.sleep(wait_time)
 
-        # ---- Phase 6: click (per-page budget) ----
         pre_ads = self.ads_clicked
         if random.random() < self.CLICK_PROBABILITY:
             page_max_clicks = (
@@ -341,7 +331,6 @@ class BrowserStackSpider(scrapy.Spider):
             self.logger.info(f"[PAGE {page_number}] Skipped (probability)")
         page_stats['ads_clicked'] = self.ads_clicked - pre_ads
 
-        # ---- Phase 7: forms ----
         try:
             payload = self.client._generate_form_data()
             filled = self.client.fill_form(form_data=payload)
@@ -353,7 +342,6 @@ class BrowserStackSpider(scrapy.Spider):
         except Exception as e:
             self.logger.debug(f"Form fill failed: {e}")
 
-        # ---- Phase 8: dwell ----
         if is_first:
             dwell_min, dwell_max = self.DWELL_TIME_MIN, self.DWELL_TIME_MAX
         else:
@@ -390,20 +378,68 @@ class BrowserStackSpider(scrapy.Spider):
         return page_stats
 
     # ============================================================
-    # Ad detection & diagnostics
+    # Ad detection — separates Adsterra from Monetag
     # ============================================================
     def _count_visible_ads(self):
         counts = {}
         specs = {
             'adsense': 'ins.adsbygoogle',
-            'monetag_container': 'div[id^="container-"]',
+
+            # Adsterra Native Banner (this is what we USED to call "container")
+            'adsterra_native': 'div[id^="container-"]',
+
+            # Adsterra direct banners (anchor tags)
+            'adsterra_banner_link': (
+                'a[href*="adsterra"], '
+                'a[href*="adsterra.net"], '
+                'a[href*="adsterra.org"]'
+            ),
+
+            # Adsterra iframe banners
+            'adsterra_iframe': (
+                'iframe[src*="adsterra"], '
+                'iframe[src*="adsterra.net"], '
+                'iframe[src*="adsterra.org"]'
+            ),
+
+            # Adsterra display divs
+            'adsterra_div': (
+                'div[class*="adsterra"], '
+                'div[id*="adsterra"]'
+            ),
+
+            # Monetag iframes (highrevenueformat, effectivecpmnetwork, etc.)
             'monetag_iframe': (
                 'iframe[src*="highrevenueformat"], '
                 'iframe[src*="effectivecpmnetwork"], '
                 'iframe[src*="profitableratecpmnetwork"], '
-                'iframe[src*="highperformanceformat"]'
+                'iframe[src*="highperformanceformat"], '
+                'iframe[src*="quge5"]'
             ),
-            'adsterra_banner': 'div[class*="advertisement"], div[id^="ad-"]',
+
+            # Generic advertisement divs (may include Adsterra)
+            'generic_ad': (
+                'div[class*="advertisement"], '
+                'div[id^="ad-"]'
+            ),
+
+            # Ezoic placeholders
+            'ezoic_placeholder': 'div[id^="ezoic-pub-ad-placeholder-"]',
+            'ezoic_iframe': 'iframe[src*="ezoic"]',
+
+            # Native ad networks
+            'mgid_widget': (
+                'div[class*="mgid"], '
+                'iframe[src*="mgid.com"]'
+            ),
+            'taboola_widget': (
+                'div[id*="taboola"], '
+                'iframe[id*="taboola"]'
+            ),
+            'outbrain_widget': (
+                'div[class*="OUTBRAIN"], '
+                'iframe[src*="outbrain"]'
+            ),
         }
         for name, selector in specs.items():
             try:
@@ -427,8 +463,17 @@ class BrowserStackSpider(scrapy.Spider):
             'iframe[src*="effectivecpmnetwork"]',
             'iframe[src*="profitableratecpmnetwork"]',
             'iframe[src*="highperformanceformat"]',
+            'iframe[src*="quge5"]',
             'div[id^="container-"]',
             'ins.adsbygoogle',
+            'a[href*="adsterra"]',
+            'iframe[src*="adsterra"]',
+            'div[class*="adsterra"]',
+            'div[id^="ezoic-pub-ad-placeholder-"]',
+            'iframe[src*="ezoic"]',
+            'iframe[src*="mgid.com"]',
+            'div[id*="taboola"]',
+            'div[class*="OUTBRAIN"]',
         ]
         self.logger.info(f"[ADS] Polling for ads (up to {self.ADS_WAIT_MAX}s)")
         start = time.time()
@@ -446,7 +491,6 @@ class BrowserStackSpider(scrapy.Spider):
         return False
 
     def _wait_for_adsense_iframe(self, timeout=30):
-        """Wait for AdSense iframe to load and become visible (size > 100x50)."""
         try:
             units = self.client.driver.find_elements(By.CSS_SELECTOR, 'ins.adsbygoogle')
             if not units:
@@ -475,7 +519,7 @@ class BrowserStackSpider(scrapy.Spider):
                             elif w > 0 and h > 0:
                                 if time.time() - last_log > 5:
                                     self.logger.debug(
-                                        f"[ADSENSE] Small iframe: {w}x{h} (still loading)"
+                                        f"[ADSENSE] Small iframe: {w}x{h} (loading)"
                                     )
                                     last_log = time.time()
                     except Exception:
@@ -560,11 +604,20 @@ class BrowserStackSpider(scrapy.Spider):
         )
 
     def _try_all_strategies(self):
-        """Try each strategy in order. Returns (success, verification, strategy_name)."""
+        """
+        Order matters — highest CPC first:
+          1. AdSense        (best CPM, needs iframe to load)
+          2. Adsterra       (popunder, banners, native)
+          3. Container      (Adsterra native banner div)
+          4. Iframe         (Monetag iframe)
+          5. Ezoic          (fallback, requires site to use Ezoic)
+        """
         for name, method in [
             ('adsense',   self._try_adsense),
+            ('adsterra',  self._try_adsterra),
             ('container', self._try_container),
             ('iframe',    self._try_iframe),
+            ('ezoic',     self._try_ezoic),
         ]:
             try:
                 success, verification = method()
@@ -659,7 +712,153 @@ class BrowserStackSpider(scrapy.Spider):
         return False, None
 
     # ------------------------------------------------------------
-    # Strategy 2: Monetag container
+    # Strategy 2: Adsterra (banners, native, iframes)
+    # ------------------------------------------------------------
+    def _try_adsterra(self):
+        """
+        Adsterra uses several formats. We try in order:
+          1. Direct <a href*="adsterra"> banner links
+          2. <iframe src*="adsterra"> iframes
+          3. <div class*="adsterra"> display containers
+        """
+        try:
+            # 1) Direct banner links
+            banner_links = self.client.driver.find_elements(
+                By.CSS_SELECTOR,
+                'a[href*="adsterra"], a[href*="adsterra.net"], a[href*="adsterra.org"]'
+            )
+            for link in banner_links:
+                if not self._safe_is_displayed(link):
+                    continue
+                key = link.get_attribute('href') or str(id(link))
+                if key in self._tried_adsterra:
+                    continue
+                self._tried_adsterra.add(key)
+
+                try:
+                    self.client.driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center', behavior:'smooth'});",
+                        link,
+                    )
+                except Exception:
+                    continue
+                time.sleep(random.uniform(2.0, 3.5))
+
+                pre_handles = self.client.driver.window_handles
+                pre_url = self.client.driver.current_url
+
+                try:
+                    ActionChains(self.client.driver) \
+                        .move_to_element(link) \
+                        .pause(random.uniform(0.3, 0.7)) \
+                        .click(link) \
+                        .perform()
+                except Exception as e:
+                    self.logger.debug(f"Adsterra link click failed: {e}")
+                    continue
+
+                verification = self.client.verify_click_result(pre_handles, pre_url)
+                verification['strategy'] = 'adsterra_link'
+                return True, verification
+
+            # 2) Adsterra iframes
+            iframes = self.client.driver.find_elements(
+                By.CSS_SELECTOR,
+                'iframe[src*="adsterra"], iframe[src*="adsterra.net"], iframe[src*="adsterra.org"]'
+            )
+            for f in iframes:
+                if not self._safe_is_displayed(f):
+                    continue
+                key = f.get_attribute('src') or str(id(f))
+                if key in self._tried_adsterra:
+                    continue
+                self._tried_adsterra.add(key)
+
+                try:
+                    self.client.driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center', behavior:'smooth'});",
+                        f,
+                    )
+                except Exception:
+                    continue
+                time.sleep(random.uniform(2.0, 3.5))
+
+                pre_handles = self.client.driver.window_handles
+                pre_url = self.client.driver.current_url
+
+                try:
+                    self.client.driver.switch_to.frame(f)
+                    time.sleep(random.uniform(1.2, 2.5))
+                    try:
+                        body = self.client.driver.find_element(By.TAG_NAME, 'body')
+                        ActionChains(self.client.driver) \
+                            .move_to_element(body) \
+                            .pause(random.uniform(0.4, 0.9)) \
+                            .click(body) \
+                            .perform()
+                    except Exception:
+                        try:
+                            self.client.driver.find_element(By.TAG_NAME, 'body').click()
+                        except Exception:
+                            return False, None
+                finally:
+                    try:
+                        self.client.driver.switch_to.default_content()
+                    except Exception:
+                        pass
+
+                verification = self.client.verify_click_result(pre_handles, pre_url)
+                verification['strategy'] = 'adsterra_iframe'
+                return True, verification
+
+            # 3) Adsterra div containers
+            divs = self.client.driver.find_elements(
+                By.CSS_SELECTOR,
+                'div[class*="adsterra"], div[id*="adsterra"]'
+            )
+            for d in divs:
+                if not self._safe_is_displayed(d):
+                    continue
+                key = d.get_attribute('id') or d.get_attribute('class') or str(id(d))
+                if key in self._tried_adsterra:
+                    continue
+                self._tried_adsterra.add(key)
+
+                try:
+                    self.client.driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center', behavior:'smooth'});",
+                        d,
+                    )
+                except Exception:
+                    continue
+                time.sleep(random.uniform(2.0, 3.5))
+
+                pre_handles = self.client.driver.window_handles
+                pre_url = self.client.driver.current_url
+
+                try:
+                    ActionChains(self.client.driver) \
+                        .move_to_element(d) \
+                        .pause(random.uniform(0.3, 0.7)) \
+                        .click(d) \
+                        .perform()
+                except Exception as e:
+                    self.logger.debug(f"Adsterra div click failed: {e}")
+                    continue
+
+                verification = self.client.verify_click_result(pre_handles, pre_url)
+                verification['strategy'] = 'adsterra_div'
+                return True, verification
+
+        except Exception as e:
+            self.logger.debug(f"[ADSTERRA] error: {e}")
+        return False, None
+
+    # ------------------------------------------------------------
+    # Strategy 3: Container (Adsterra Native Banner)
+    # NOTE: div[id^="container-"] is Adsterra Native Banner
+    # The strategy is named "container" to keep backward compatibility
+    # but it's really Adsterra — the verification records this.
     # ------------------------------------------------------------
     def _try_container(self):
         try:
@@ -697,14 +896,14 @@ class BrowserStackSpider(scrapy.Spider):
                     continue
 
                 verification = self.client.verify_click_result(pre_handles, pre_url)
-                verification['strategy'] = 'container'
+                verification['strategy'] = 'container'  # Adsterra Native Banner
                 return True, verification
         except Exception as e:
             self.logger.debug(f"[CONTAINER] error: {e}")
         return False, None
 
     # ------------------------------------------------------------
-    # Strategy 3: Monetag iframe
+    # Strategy 4: Monetag iframe
     # ------------------------------------------------------------
     def _try_iframe(self):
         try:
@@ -713,7 +912,8 @@ class BrowserStackSpider(scrapy.Spider):
                 'iframe[src*="highrevenueformat"], '
                 'iframe[src*="effectivecpmnetwork"], '
                 'iframe[src*="highperformanceformat"], '
-                'iframe[src*="profitableratecpmnetwork"]'
+                'iframe[src*="profitableratecpmnetwork"], '
+                'iframe[src*="quge5"]'
             )
             for f in iframes:
                 if not self._safe_is_displayed(f):
@@ -752,11 +952,86 @@ class BrowserStackSpider(scrapy.Spider):
             self.logger.debug(f"[IFRAME] error: {e}")
         return False, None
 
+    # ------------------------------------------------------------
+    # Strategy 5: Ezoic (only if the site uses Ezoic)
+    # ------------------------------------------------------------
+    def _try_ezoic(self):
+        """
+        Ezoic placeholders look like:
+          <div id="ezoic-pub-ad-placeholder-103"> ... <iframe> ... </div>
+        """
+        try:
+            placeholders = self.client.driver.find_elements(
+                By.CSS_SELECTOR, 'div[id^="ezoic-pub-ad-placeholder-"]'
+            )
+            for ph in placeholders:
+                if not self._safe_is_displayed(ph):
+                    continue
+                key = ph.get_attribute('id') or str(id(ph))
+                if key in self._tried_ezoic:
+                    continue
+                self._tried_ezoic.add(key)
+
+                iframe = None
+                try:
+                    iframe = ph.find_element(By.TAG_NAME, 'iframe')
+                except NoSuchElementException:
+                    iframe = None
+
+                try:
+                    self.client.driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center', behavior:'smooth'});",
+                        ph,
+                    )
+                except Exception:
+                    continue
+                time.sleep(random.uniform(2.0, 3.5))
+
+                pre_handles = self.client.driver.window_handles
+                pre_url = self.client.driver.current_url
+
+                if iframe and iframe.is_displayed():
+                    try:
+                        self.client.driver.switch_to.frame(iframe)
+                        time.sleep(random.uniform(1.2, 2.5))
+                        try:
+                            body = self.client.driver.find_element(By.TAG_NAME, 'body')
+                            ActionChains(self.client.driver) \
+                                .move_to_element(body) \
+                                .pause(random.uniform(0.4, 0.9)) \
+                                .click(body) \
+                                .perform()
+                        except Exception:
+                            try:
+                                self.client.driver.find_element(By.TAG_NAME, 'body').click()
+                            except Exception:
+                                return False, None
+                    finally:
+                        try:
+                            self.client.driver.switch_to.default_content()
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        ActionChains(self.client.driver) \
+                            .move_to_element(ph) \
+                            .pause(random.uniform(0.3, 0.7)) \
+                            .click(ph) \
+                            .perform()
+                    except Exception:
+                        continue
+
+                verification = self.client.verify_click_result(pre_handles, pre_url)
+                verification['strategy'] = 'ezoic'
+                return True, verification
+        except Exception as e:
+            self.logger.debug(f"[EZOIC] error: {e}")
+        return False, None
+
     # ============================================================
-    # Internal link discovery — Blogger-aware selectors
+    # Internal link discovery
     # ============================================================
     def _pick_internal_link_url(self):
-        """Pick an internal link URL without navigating."""
         try:
             target_domain = urlparse(self.target_url).netloc
 
@@ -770,24 +1045,19 @@ class BrowserStackSpider(scrapy.Spider):
             ]
 
             selectors = [
-                # Blogger article links
                 '.post-title a',
                 '.post h3 a',
                 'h2.post-title a',
                 'a.post-link',
-                # Blogger pager / archive
                 '.blog-pager a',
                 '.blog-pager-older-link',
                 '#BlogArchive1_ArchiveList a',
                 '.BlogArchive a',
-                # Blog homepage articles
                 'article h2 a',
                 'article .post-title a',
-                # Sidebar popular / featured
                 '.PopularPosts a',
                 '.FeaturedPost a',
                 '.widget-content a',
-                # Fallbacks
                 'article a[href]:not([href^="#"])',
                 'h3 a[href]:not([href^="#"])',
                 'a[href]:not([href^="#"])',
