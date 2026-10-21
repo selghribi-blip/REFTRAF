@@ -1,6 +1,5 @@
 # spiders/browserstack_spider.py
-# Slow Click Mode — Human-like behavior with proper timing and multi-strategy
-# ad clicking (AdSense / Monetag container / Monetag iframe).
+# Multi-page slow click mode with click verification and AdSense hunting.
 # ==========================================================================
 import os
 import random
@@ -37,15 +36,18 @@ class BrowserStackSpider(scrapy.Spider):
     ]
 
     # ============================================================
-    # SLOW CLICK MODE — tunable via environment variables
+    # Tunable behavior
     # ============================================================
     USE_MOBILE = True
 
-    # Reading phase (before any click)
+    # Max pages per session (main + internal)
+    MAX_PAGES_PER_SESSION = int(os.getenv('MAX_PAGES_PER_SESSION', '3'))
+
+    # Reading phase
     READ_TIME_MIN = 30
     READ_TIME_MAX = 60
 
-    # Click behavior (conservative)
+    # Click behavior
     MAX_AD_CLICKS_PER_SESSION = int(os.getenv('MAX_ADS_PER_SESSION', '2'))
     CLICK_PROBABILITY = 0.6
     TIME_BEFORE_FIRST_CLICK_MIN = 45
@@ -55,61 +57,72 @@ class BrowserStackSpider(scrapy.Spider):
     TIME_AFTER_CLICK_MIN = 15
     TIME_AFTER_CLICK_MAX = 30
 
-    # Dwell (total time on page)
+    # Dwell
     DWELL_TIME_MIN = int(os.getenv('DWELL_TIME_MIN', '180'))
     DWELL_TIME_MAX = int(os.getenv('DWELL_TIME_MAX', '300'))
 
-    # Scrolling
-    SCROLL_MIN = 4
-    SCROLL_MAX = 8
-    SCROLL_DELAY_MIN = 3.0
-    SCROLL_DELAY_MAX = 7.0
-
-    # Internal links
-    INTERNAL_LINKS_MIN = 1
-    INTERNAL_LINKS_MAX = 2
+    # Internal-page overrides (shorter)
+    INTERNAL_READ_MIN = 20
+    INTERNAL_READ_MAX = 40
+    INTERNAL_DWELL_MIN = 60
+    INTERNAL_DWELL_MAX = 120
+    INTERNAL_MAX_CLICKS = 1
 
     ADS_WAIT_MAX = 40
+    ADSENSE_IFRAME_WAIT = 15
 
     def __init__(self, target_url=None, use_browserstack='true', *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.target_url = (target_url or '').strip() or 'https://www.forjo.tech/'
         self.use_browserstack = str(use_browserstack).lower() == 'true'
         self.client = None
+
+        # Session-level counters
         self.ads_clicked = 0
         self.forms_filled = 0
         self.proxy_used = None
         self.dwell_time = 0
         self.scroll_count = 0
         self.internal_clicks = 0
+        self.reading_time = 0
+        self.click_attempts = 0
+
+        # Diagnostics
         self.captcha_detected = False
         self.ads_detected_in_dom = False
         self.ads_visible_counts = {}
-        self.click_attempts = 0
-        self.reading_time = 0
-        self._proxy_provider = None
-        self._tried_adsense = set()
-        self._tried_containers = set()
-        self._tried_iframes = set()
         self.clicks_by_strategy = Counter()
+        self.click_verifications = []
         self.proxy_bypassed = False
         self.form_payload = None
 
+        # Navigation state
+        self._visited_urls = set()
+        self._tried_adsense = set()
+        self._tried_containers = set()
+        self._tried_iframes = set()
+        self._proxy_provider = None
+
+    # ============================================================
+    # Entry point
+    # ============================================================
     def start_requests(self):
         if not self.target_url.startswith(('http://', 'https://')):
             self.target_url = 'https://' + self.target_url
 
-        self.logger.info(f"Starting SLOW CLICK bot for: {self.target_url}")
+        self.logger.info(f"Starting MULTI-PAGE bot for: {self.target_url}")
         self.logger.info(f"   Mode: {'BrowserStack' if self.use_browserstack else 'Local'}")
-        self.logger.info(f"   Mobile: {self.USE_MOBILE}")
-        self.logger.info(f"   Max clicks: {self.MAX_AD_CLICKS_PER_SESSION}")
-        self.logger.info(f"   Dwell: {self.DWELL_TIME_MIN}-{self.DWELL_TIME_MAX}s")
+        self.logger.info(f"   Max pages/session: {self.MAX_PAGES_PER_SESSION}")
+        self.logger.info(f"   Max clicks (main): {self.MAX_AD_CLICKS_PER_SESSION}")
+        self.logger.info(f"   Max clicks (internal): {self.INTERNAL_MAX_CLICKS}")
+        self.logger.info(f"   Dwell (main): {self.DWELL_TIME_MIN}-{self.DWELL_TIME_MAX}s")
+        self.logger.info(f"   Dwell (internal): {self.INTERNAL_DWELL_MIN}-{self.INTERNAL_DWELL_MAX}s")
 
         if self.use_browserstack:
             user = os.environ.get('BROWSERSTACK_USERNAME', '').strip()
             key = os.environ.get('BROWSERSTACK_ACCESS_KEY', '').strip()
             if not (user and key):
-                self.logger.warning("BrowserStack credentials missing - falling back to LOCAL")
+                self.logger.warning("BrowserStack creds missing - falling back to LOCAL")
                 self.use_browserstack = False
 
         yield scrapy.Request(
@@ -121,11 +134,12 @@ class BrowserStackSpider(scrapy.Spider):
         )
 
     # ============================================================
-    # Main flow
+    # Main flow — orchestrates multi-page session
     # ============================================================
     def parse_with_browser(self, response):
         status = 'unknown'
         error_msg = None
+        pages_stats = []
 
         try:
             proxy = self._pick_proxy()
@@ -145,71 +159,28 @@ class BrowserStackSpider(scrapy.Spider):
                 self.captcha_detected = True
                 raise RuntimeError("Google CAPTCHA detected")
 
-            # ============================================================
-            # PHASE 1: Page loaded — settle
-            # ============================================================
-            self.logger.info("[PHASE 1] Page loaded - settling...")
-            time.sleep(random.uniform(3, 6))
+            self._visited_urls.add(self.target_url)
 
-            # ============================================================
-            # PHASE 2: Human-like reading (no clicks)
-            # ============================================================
-            self._human_reading_phase()
+            # ---- Page 1: main target ----
+            self.logger.info("[MAIN] Page 1 — target")
+            pages_stats.append(self._run_page_phases(1, is_first=True))
 
-            # ============================================================
-            # PHASE 3: Count visible ads + wait for them to render
-            # ============================================================
-            self.ads_visible_counts = self._count_visible_ads()
-            self.ads_detected_in_dom = self._wait_for_ads()
+            # ---- Pages 2..N: internal ----
+            for page_num in range(2, self.MAX_PAGES_PER_SESSION + 1):
+                next_url = self._pick_internal_link_url()
+                if not next_url:
+                    self.logger.info(f"[NAV] No more internal links (stopped at {page_num-1})")
+                    break
 
-            # ============================================================
-            # PHASE 4: Monetag warm-up (synthetic click at center)
-            # ============================================================
-            if self.ads_detected_in_dom and not self.ads_visible_counts.get('adsense', 0):
-                self._trigger_monetag_once()
-                time.sleep(random.uniform(2, 4))
-
-            # ============================================================
-            # PHASE 5: Wait before first click
-            # ============================================================
-            wait_time = random.uniform(
-                self.TIME_BEFORE_FIRST_CLICK_MIN,
-                self.TIME_BEFORE_FIRST_CLICK_MAX,
-            )
-            self.logger.info(f"[PHASE 5] Waiting {wait_time:.0f}s before first click")
-            time.sleep(wait_time)
-
-            # ============================================================
-            # PHASE 6: Slow click (probability-gated)
-            # ============================================================
-            if random.random() < self.CLICK_PROBABILITY:
-                self.logger.info("[PHASE 6] Starting slow click sequence")
-                self._slow_click_sequence()
-            else:
-                self.logger.info("[PHASE 6] Skipped clicking (probability)")
-
-            # ============================================================
-            # PHASE 7: Fill forms (if any)
-            # ============================================================
-            try:
-                payload = self.client._generate_form_data()
-                filled = self.client.fill_form(form_data=payload)
-                self.forms_filled = filled
-                if filled > 0:
-                    self.form_payload = payload
-                    time.sleep(random.uniform(5, 10))
-            except Exception as e:
-                self.logger.debug(f"Form fill failed: {e}")
-
-            # ============================================================
-            # PHASE 8: Maybe visit one internal link
-            # ============================================================
-            self._maybe_visit_internal_link()
-
-            # ============================================================
-            # PHASE 9: Final dwell
-            # ============================================================
-            self._final_dwell()
+                self.logger.info(f"[NAV] Page {page_num}: {next_url[:80]}")
+                try:
+                    self.client.driver.get(next_url)
+                    self.client.wait_for_page_load(timeout=20)
+                    time.sleep(random.uniform(2, 4))
+                    pages_stats.append(self._run_page_phases(page_num, is_first=False))
+                except Exception as e:
+                    self.logger.warning(f"[NAV] Page {page_num} failed: {e}")
+                    break
 
             try:
                 fname = f"bs_{int(datetime.now(timezone.utc).timestamp())}.png"
@@ -219,10 +190,10 @@ class BrowserStackSpider(scrapy.Spider):
 
             status = 'success'
             self.logger.info(
-                f"SLOW CLICK COMPLETE | ads={self.ads_clicked} "
-                f"strategies={dict(self.clicks_by_strategy)} "
-                f"attempts={self.click_attempts} read={self.reading_time}s "
-                f"dwell={self.dwell_time}s mobile={getattr(self.client, 'is_mobile', False)}"
+                f"SESSION COMPLETE | pages={len(pages_stats)} "
+                f"ads={self.ads_clicked} strategies={dict(self.clicks_by_strategy)} "
+                f"verifications={len(self.click_verifications)} "
+                f"read={self.reading_time}s dwell={self.dwell_time}s"
             )
 
         except RuntimeError as e:
@@ -256,8 +227,11 @@ class BrowserStackSpider(scrapy.Spider):
             'url': self.target_url,
             'status': status,
             'error': error_msg,
+            'pages_visited': len(pages_stats),
+            'pages': pages_stats,
             'ads_clicked': self.ads_clicked,
             'clicks_by_strategy': dict(self.clicks_by_strategy),
+            'click_verifications': self.click_verifications,
             'click_attempts': self.click_attempts,
             'ads_detected': self.ads_detected_in_dom,
             'ads_visible': self.ads_visible_counts,
@@ -276,11 +250,33 @@ class BrowserStackSpider(scrapy.Spider):
         }
 
     # ============================================================
-    # PHASE 2: Human Reading Phase
+    # Run all phases on the CURRENTLY LOADED page
     # ============================================================
-    def _human_reading_phase(self):
-        read_time = random.uniform(self.READ_TIME_MIN, self.READ_TIME_MAX)
-        self.logger.info(f"[READ] Reading page for {read_time:.0f}s...")
+    def _run_page_phases(self, page_number, is_first=False):
+        page_url = self.client.driver.current_url
+        page_stats = {
+            'page_number': page_number,
+            'url': page_url,
+            'ads_clicked': 0,
+            'forms_filled': 0,
+            'reading_time': 0,
+            'dwell_time': 0,
+            'scrolls': 0,
+            'adsense_waited': False,
+        }
+
+        self.logger.info(f"[PAGE {page_number}] URL: {page_url[:80]}")
+
+        # ---- Phase 1: settle ----
+        time.sleep(random.uniform(3, 6))
+
+        # ---- Phase 2: reading ----
+        if is_first:
+            read_min, read_max = self.READ_TIME_MIN, self.READ_TIME_MAX
+        else:
+            read_min, read_max = self.INTERNAL_READ_MIN, self.INTERNAL_READ_MAX
+        read_time = random.uniform(read_min, read_max)
+        self.logger.info(f"[PAGE {page_number}] Reading for {read_time:.0f}s")
         start = time.time()
         while time.time() - start < read_time:
             try:
@@ -288,6 +284,7 @@ class BrowserStackSpider(scrapy.Spider):
                 self.client.driver.execute_script(
                     f"window.scrollBy({{top: {pixels}, behavior: 'smooth'}});"
                 )
+                page_stats['scrolls'] += 1
                 self.scroll_count += 1
                 time.sleep(random.uniform(3.0, 7.0))
                 if random.random() < 0.2:
@@ -297,14 +294,104 @@ class BrowserStackSpider(scrapy.Spider):
                     time.sleep(random.uniform(1.5, 3.0))
             except Exception:
                 pass
-        self.reading_time = int(time.time() - start)
-        self.logger.info(f"[READ] Done reading ({self.reading_time}s)")
+        page_stats['reading_time'] = int(time.time() - start)
+        self.reading_time += page_stats['reading_time']
+
+        # ---- Phase 3: count ads + AdSense hunting ----
+        self.ads_visible_counts = self._count_visible_ads()
+        adsense_info = self.ads_visible_counts.get('adsense', {})
+        if adsense_info.get('total', 0) > 0 and adsense_info.get('visible', 0) == 0:
+            self.logger.info(
+                f"[PAGE {page_number}] AdSense present but no visible iframe — waiting up to {self.ADSENSE_IFRAME_WAIT}s"
+            )
+            waited = self._wait_for_adsense_iframe(timeout=self.ADSENSE_IFRAME_WAIT)
+            page_stats['adsense_waited'] = waited
+            if waited:
+                self.ads_visible_counts = self._count_visible_ads()
+
+        self.ads_detected_in_dom = self._wait_for_ads()
+
+        # ---- Phase 4: Monetag warm-up (first page only) ----
+        if is_first and self.ads_detected_in_dom and \
+           not self.ads_visible_counts.get('adsense', {}).get('visible', 0):
+            self._trigger_monetag_once()
+            time.sleep(random.uniform(2, 4))
+
+        # ---- Phase 5: wait before first click ----
+        if is_first:
+            wait_time = random.uniform(
+                self.TIME_BEFORE_FIRST_CLICK_MIN, self.TIME_BEFORE_FIRST_CLICK_MAX,
+            )
+        else:
+            wait_time = random.uniform(15, 30)
+        self.logger.info(f"[PAGE {page_number}] Waiting {wait_time:.0f}s before click")
+        time.sleep(wait_time)
+
+        # ---- Phase 6: click (per-page budget) ----
+        pre_ads = self.ads_clicked
+        if random.random() < self.CLICK_PROBABILITY:
+            page_max_clicks = (
+                self.MAX_AD_CLICKS_PER_SESSION if is_first
+                else self.INTERNAL_MAX_CLICKS
+            )
+            self.logger.info(f"[PAGE {page_number}] Click sequence (max={page_max_clicks})")
+            self._slow_click_sequence(max_clicks=page_max_clicks)
+        else:
+            self.logger.info(f"[PAGE {page_number}] Skipped (probability)")
+        page_stats['ads_clicked'] = self.ads_clicked - pre_ads
+
+        # ---- Phase 7: forms ----
+        try:
+            payload = self.client._generate_form_data()
+            filled = self.client.fill_form(form_data=payload)
+            page_stats['forms_filled'] = filled
+            self.forms_filled += filled
+            if filled > 0:
+                self.form_payload = payload
+                time.sleep(random.uniform(5, 10))
+        except Exception as e:
+            self.logger.debug(f"Form fill failed: {e}")
+
+        # ---- Phase 8: dwell ----
+        if is_first:
+            dwell_min, dwell_max = self.DWELL_TIME_MIN, self.DWELL_TIME_MAX
+        else:
+            dwell_min, dwell_max = self.INTERNAL_DWELL_MIN, self.INTERNAL_DWELL_MAX
+        dwell = random.randint(dwell_min, dwell_max)
+        self.logger.info(f"[PAGE {page_number}] Dwell for {dwell}s")
+        start = time.time()
+        last_scroll = time.time()
+        while time.time() - start < dwell:
+            if time.time() - last_scroll > random.uniform(10, 20):
+                try:
+                    pixels = random.randint(200, 500)
+                    self.client.driver.execute_script(
+                        f"window.scrollBy({{top: {pixels}, behavior: 'smooth'}});"
+                    )
+                    page_stats['scrolls'] += 1
+                    self.scroll_count += 1
+                    if random.random() < 0.3:
+                        time.sleep(random.uniform(1, 2))
+                        self.client.driver.execute_script(
+                            f"window.scrollBy({{top: -{random.randint(100, 300)}, behavior: 'smooth'}});"
+                        )
+                    last_scroll = time.time()
+                except Exception:
+                    pass
+            time.sleep(random.uniform(2, 5))
+        page_stats['dwell_time'] = int(time.time() - start)
+        self.dwell_time += page_stats['dwell_time']
+
+        self.logger.info(
+            f"[PAGE {page_number}] DONE | ads={page_stats['ads_clicked']} "
+            f"read={page_stats['reading_time']}s dwell={page_stats['dwell_time']}s"
+        )
+        return page_stats
 
     # ============================================================
     # Ad detection & diagnostics
     # ============================================================
     def _count_visible_ads(self):
-        """Count each ad type individually — great for diagnosing 0-click runs."""
         counts = {}
         specs = {
             'adsense': 'ins.adsbygoogle',
@@ -342,7 +429,7 @@ class BrowserStackSpider(scrapy.Spider):
             'div[id^="container-"]',
             'ins.adsbygoogle',
         ]
-        self.logger.info(f"[ADS] Polling for ads (up to {self.ADS_WAIT_MAX}s)...")
+        self.logger.info(f"[ADS] Polling for ads (up to {self.ADS_WAIT_MAX}s)")
         start = time.time()
         while time.time() - start < self.ADS_WAIT_MAX:
             for selector in selectors:
@@ -357,9 +444,37 @@ class BrowserStackSpider(scrapy.Spider):
         self.logger.warning(f"[ADS] No ads found after {self.ADS_WAIT_MAX}s")
         return False
 
-    # ============================================================
-    # PHASE 4: Monetag warm-up
-    # ============================================================
+    def _wait_for_adsense_iframe(self, timeout=15):
+        """Wait for AdSense iframe to load and become visible (size > 50x50)."""
+        try:
+            units = self.client.driver.find_elements(By.CSS_SELECTOR, 'ins.adsbygoogle')
+            if not units:
+                return False
+            start = time.time()
+            while time.time() - start < timeout:
+                for ins in units:
+                    try:
+                        if not self._safe_is_displayed(ins):
+                            continue
+                        iframe = ins.find_element(By.TAG_NAME, 'iframe')
+                        if iframe and iframe.is_displayed():
+                            size = iframe.size
+                            if size.get('width', 0) > 50 and size.get('height', 0) > 50:
+                                self.logger.info(
+                                    f"[ADSENSE] iframe loaded ({size['width']}x{size['height']})"
+                                )
+                                return True
+                    except NoSuchElementException:
+                        continue
+                    except Exception:
+                        continue
+                time.sleep(1.5)
+            self.logger.info(f"[ADSENSE] No iframe after {timeout}s")
+            return False
+        except Exception as e:
+            self.logger.debug(f"[ADSENSE] Wait error: {e}")
+            return False
+
     def _trigger_monetag_once(self):
         try:
             self.client.driver.execute_script("""
@@ -378,47 +493,34 @@ class BrowserStackSpider(scrapy.Spider):
             self.logger.debug(f"Monetag trigger failed: {e}")
 
     # ============================================================
-    # PHASE 6: Slow click — try AdSense first, then containers, then iframes
+    # Click sequence
     # ============================================================
-    def _slow_click_sequence(self):
-        self.logger.info("Starting SLOW click sequence...")
+    def _slow_click_sequence(self, max_clicks=None):
+        if max_clicks is None:
+            max_clicks = self.MAX_AD_CLICKS_PER_SESSION
+
+        self.logger.info(f"Starting SLOW click sequence (max={max_clicks})")
         clicked = 0
 
-        for attempt in range(self.MAX_AD_CLICKS_PER_SESSION):
-            if clicked >= self.MAX_AD_CLICKS_PER_SESSION:
+        for attempt in range(max_clicks):
+            if clicked >= max_clicks:
                 break
             self.click_attempts += 1
-            self.logger.info(
-                f"[SLOW] Attempt {attempt + 1}/{self.MAX_AD_CLICKS_PER_SESSION}"
-            )
+            self.logger.info(f"[SLOW] Attempt {attempt + 1}/{max_clicks}")
 
-            success = False
-
-            # --- Strategy 1: AdSense ---
-            if self._try_adsense():
-                clicked += 1
-                self.ads_clicked += 1
-                self.clicks_by_strategy['adsense'] += 1
-                success = True
-                self.logger.info(f"[SLOW] ✅ AdSense clicked (total: {clicked})")
-
-            # --- Strategy 2: Monetag container ---
-            elif self._try_container():
-                clicked += 1
-                self.ads_clicked += 1
-                self.clicks_by_strategy['container'] += 1
-                success = True
-                self.logger.info(f"[SLOW] ✅ Container clicked (total: {clicked})")
-
-            # --- Strategy 3: Monetag iframe ---
-            elif self._try_monetag_iframe():
-                clicked += 1
-                self.ads_clicked += 1
-                self.clicks_by_strategy['iframe'] += 1
-                success = True
-                self.logger.info(f"[SLOW] ✅ Iframe clicked (total: {clicked})")
+            success, verification, strategy = self._try_all_strategies()
 
             if success:
+                clicked += 1
+                self.ads_clicked += 1
+                self.clicks_by_strategy[strategy] += 1
+                if verification:
+                    self.click_verifications.append(verification)
+                self.logger.info(
+                    f"[SLOW] ✅ {strategy} clicked (total: {clicked}) "
+                    f"| verif={verification}"
+                )
+
                 post_wait = random.uniform(
                     self.TIME_AFTER_CLICK_MIN, self.TIME_AFTER_CLICK_MAX,
                 )
@@ -426,7 +528,7 @@ class BrowserStackSpider(scrapy.Spider):
                 time.sleep(post_wait)
                 self._close_extra_tabs()
 
-                if clicked >= self.MAX_AD_CLICKS_PER_SESSION:
+                if clicked >= max_clicks:
                     break
 
                 between_wait = random.uniform(
@@ -435,24 +537,39 @@ class BrowserStackSpider(scrapy.Spider):
                 self.logger.info(f"[SLOW] Waiting {between_wait:.0f}s between clicks")
                 time.sleep(between_wait)
             else:
-                if attempt < self.MAX_AD_CLICKS_PER_SESSION - 1:
+                if attempt < max_clicks - 1:
                     retry_wait = random.uniform(8, 15)
-                    self.logger.info(f"[SLOW] No click this attempt - waiting {retry_wait:.0f}s")
+                    self.logger.info(f"[SLOW] No click — waiting {retry_wait:.0f}s")
                     time.sleep(retry_wait)
 
         self.logger.info(
-            f"[SLOW] Sequence done: {clicked} clicks | "
-            f"{self.click_attempts} attempts | strategies={dict(self.clicks_by_strategy)}"
+            f"[SLOW] Done: {clicked} clicks | {self.click_attempts} attempts | "
+            f"strategies={dict(self.clicks_by_strategy)}"
         )
 
+    def _try_all_strategies(self):
+        """Try each strategy in order. Returns (success, verification, strategy_name)."""
+        for name, method in [
+            ('adsense',   self._try_adsense),
+            ('container', self._try_container),
+            ('iframe',    self._try_iframe),
+        ]:
+            try:
+                success, verification = method()
+                if success:
+                    return True, verification, name
+            except Exception as e:
+                self.logger.debug(f"[{name.upper()}] Unhandled: {e}")
+        return False, None, None
+
     # ------------------------------------------------------------
-    # Strategy 1: AdSense (handles double iframe)
+    # Strategy 1: AdSense
     # ------------------------------------------------------------
     def _try_adsense(self):
         try:
             units = self.client.driver.find_elements(By.CSS_SELECTOR, 'ins.adsbygoogle')
             if not units:
-                return False
+                return False, None
 
             for ins in units:
                 if not self._safe_is_displayed(ins):
@@ -467,7 +584,6 @@ class BrowserStackSpider(scrapy.Spider):
                     continue
                 self._tried_adsense.add(ins_key)
 
-                # Scroll into view
                 try:
                     self.client.driver.execute_script(
                         "arguments[0].scrollIntoView({block:'center', behavior:'smooth'});",
@@ -477,16 +593,22 @@ class BrowserStackSpider(scrapy.Spider):
                     continue
                 time.sleep(random.uniform(2.0, 3.5))
 
-                # Find inner iframe
+                # Get iframe
+                iframe = None
                 try:
                     iframe = ins.find_element(By.TAG_NAME, 'iframe')
                 except NoSuchElementException:
-                    self.logger.debug("[ADSENSE] No iframe inside ins.adsbygoogle")
+                    self.logger.debug("[ADSENSE] No iframe")
                     continue
                 except Exception:
                     continue
 
-                # Enter iframe(s)
+                if not iframe or not iframe.is_displayed():
+                    continue
+
+                pre_handles = self.client.driver.window_handles
+                pre_url = self.client.driver.current_url
+
                 try:
                     self.client.driver.switch_to.frame(iframe)
                     time.sleep(random.uniform(1.2, 2.5))
@@ -497,8 +619,6 @@ class BrowserStackSpider(scrapy.Spider):
                         self.client.driver.switch_to.frame(inner)
                         time.sleep(random.uniform(0.8, 1.5))
                     except NoSuchElementException:
-                        pass
-                    except Exception:
                         pass
 
                     try:
@@ -514,19 +634,22 @@ class BrowserStackSpider(scrapy.Spider):
                                 By.TAG_NAME, 'body'
                             ).click()
                         except Exception:
-                            return False
-                    return True
+                            return False, None
                 finally:
                     try:
                         self.client.driver.switch_to.default_content()
                     except Exception:
                         pass
+
+                verification = self.client.verify_click_result(pre_handles, pre_url)
+                verification['strategy'] = 'adsense'
+                return True, verification
         except Exception as e:
-            self.logger.debug(f"[ADSENSE] Strategy error: {e}")
-        return False
+            self.logger.debug(f"[ADSENSE] error: {e}")
+        return False, None
 
     # ------------------------------------------------------------
-    # Strategy 2: Monetag container (div[id^="container-"])
+    # Strategy 2: Monetag container
     # ------------------------------------------------------------
     def _try_container(self):
         try:
@@ -550,23 +673,30 @@ class BrowserStackSpider(scrapy.Spider):
                     continue
                 time.sleep(random.uniform(2.0, 3.5))
 
+                pre_handles = self.client.driver.window_handles
+                pre_url = self.client.driver.current_url
+
                 try:
                     ActionChains(self.client.driver) \
                         .move_to_element(c) \
                         .pause(random.uniform(0.3, 0.7)) \
                         .click(c) \
                         .perform()
-                    return True
                 except Exception as e:
                     self.logger.debug(f"Container click failed: {e}")
+                    continue
+
+                verification = self.client.verify_click_result(pre_handles, pre_url)
+                verification['strategy'] = 'container'
+                return True, verification
         except Exception as e:
-            self.logger.debug(f"[CONTAINER] Strategy error: {e}")
-        return False
+            self.logger.debug(f"[CONTAINER] error: {e}")
+        return False, None
 
     # ------------------------------------------------------------
     # Strategy 3: Monetag iframe
     # ------------------------------------------------------------
-    def _try_monetag_iframe(self):
+    def _try_iframe(self):
         try:
             iframes = self.client.driver.find_elements(
                 By.CSS_SELECTOR,
@@ -592,93 +722,63 @@ class BrowserStackSpider(scrapy.Spider):
                     continue
                 time.sleep(random.uniform(2.0, 3.5))
 
+                pre_handles = self.client.driver.window_handles
+                pre_url = self.client.driver.current_url
+
                 try:
                     ActionChains(self.client.driver) \
                         .move_to_element(f) \
                         .pause(random.uniform(0.3, 0.7)) \
                         .click(f) \
                         .perform()
-                    return True
                 except Exception as e:
                     self.logger.debug(f"Iframe click failed: {e}")
+                    continue
+
+                verification = self.client.verify_click_result(pre_handles, pre_url)
+                verification['strategy'] = 'iframe'
+                return True, verification
         except Exception as e:
-            self.logger.debug(f"[IFRAME] Strategy error: {e}")
-        return False
+            self.logger.debug(f"[IFRAME] error: {e}")
+        return False, None
 
     # ============================================================
-    # PHASE 8: Maybe visit internal link (50%)
+    # Internal link discovery
     # ============================================================
-    def _maybe_visit_internal_link(self):
-        if random.random() > 0.5:
-            self.logger.info("[LINK] Skipping internal link this session")
-            return
-
+    def _pick_internal_link_url(self):
+        """Pick an internal link URL without navigating."""
         try:
             target_domain = urlparse(self.target_url).netloc
             selectors = [
                 'article a:not([href^="#"])',
                 'h2 a',
                 '.post-title a',
+                'a[rel="bookmark"]',
             ]
             for selector in selectors:
-                links = self.client.driver.find_elements(By.CSS_SELECTOR, selector)
-                if not links:
+                try:
+                    links = self.client.driver.find_elements(By.CSS_SELECTOR, selector)
+                except Exception:
                     continue
-
-                link = random.choice(links[:3])
-                href = link.get_attribute('href') or ''
-                if not href or target_domain not in href:
-                    continue
-
-                self.logger.info(f"[LINK] Visiting: {href[:60]}")
-                link.click()
-                time.sleep(random.uniform(5, 10))
-
-                for _ in range(random.randint(2, 4)):
-                    self.client.driver.execute_script(
-                        f"window.scrollBy({{top: {random.randint(200, 500)}, behavior: 'smooth'}});"
-                    )
-                    time.sleep(random.uniform(3, 6))
-
-                self.client.driver.back()
-                time.sleep(random.uniform(3, 5))
-                self.internal_clicks = 1
-                break
-        except Exception as e:
-            self.logger.debug(f"Internal link error: {e}")
-
-    # ============================================================
-    # PHASE 9: Final dwell
-    # ============================================================
-    def _final_dwell(self):
-        try:
-            duration = random.randint(self.DWELL_TIME_MIN, self.DWELL_TIME_MAX)
-            self.logger.info(f"[DWELL] Final dwell for {duration}s...")
-            start = time.time()
-            last_scroll = time.time()
-
-            while time.time() - start < duration:
-                if time.time() - last_scroll > random.uniform(10, 20):
+                for link in links[:8]:
                     try:
-                        pixels = random.randint(200, 500)
-                        self.client.driver.execute_script(
-                            f"window.scrollBy({{top: {pixels}, behavior: 'smooth'}});"
-                        )
-                        if random.random() < 0.3:
-                            time.sleep(random.uniform(1, 2))
-                            self.client.driver.execute_script(
-                                f"window.scrollBy({{top: -{random.randint(100, 300)}, behavior: 'smooth'}});"
-                            )
-                        last_scroll = time.time()
+                        href = link.get_attribute('href') or ''
+                        if not href or target_domain not in href:
+                            continue
+                        if href in self._visited_urls:
+                            continue
+                        # Skip obvious non-article links
+                        if any(x in href.lower() for x in
+                               ['/tag/', '/label/', '/search', '/feed',
+                                'facebook.com', 'twitter.com', '.jpg', '.png']):
+                            continue
+                        self._visited_urls.add(href)
+                        return href
                     except Exception:
-                        pass
-                time.sleep(random.uniform(2, 5))
-
-            self.dwell_time = int(time.time() - start)
-            self.logger.info(f"[DWELL] Complete ({self.dwell_time}s)")
+                        continue
         except Exception as e:
-            self.logger.debug(f"Dwell error: {e}")
-            self.dwell_time = self.DWELL_TIME_MIN
+            self.logger.debug(f"Link pick error: {e}")
+        return None
 
     # ============================================================
     # Tab cleanup
@@ -700,6 +800,7 @@ class BrowserStackSpider(scrapy.Spider):
                 except Exception:
                     pass
                 self.logger.info(f"[TABS] Closed {len(handles) - 1} extra tabs")
+                self.internal_clicks += len(handles) - 1
         except Exception as e:
             self.logger.debug(f"Tab close error: {e}")
 
@@ -754,6 +855,7 @@ class BrowserStackSpider(scrapy.Spider):
         self.logger.info(
             f"Closed ({reason}) | ads={self.ads_clicked} "
             f"strategies={dict(self.clicks_by_strategy)} "
+            f"verifications={len(self.click_verifications)} "
             f"attempts={self.click_attempts} "
             f"read={self.reading_time}s dwell={self.dwell_time}s "
             f"proxy_bypassed={self.proxy_bypassed}"
