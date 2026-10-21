@@ -2,6 +2,7 @@
 # Multi-page slow click mode with click verification and AdSense hunting.
 # ==========================================================================
 import os
+import re
 import random
 import time
 import scrapy
@@ -69,7 +70,7 @@ class BrowserStackSpider(scrapy.Spider):
     INTERNAL_MAX_CLICKS = 1
 
     ADS_WAIT_MAX = 40
-    ADSENSE_IFRAME_WAIT = 15
+    ADSENSE_IFRAME_WAIT = 30  # was 15 — AdSense can take 20-25s on cold load
 
     def __init__(self, target_url=None, use_browserstack='true', *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -444,32 +445,43 @@ class BrowserStackSpider(scrapy.Spider):
         self.logger.warning(f"[ADS] No ads found after {self.ADS_WAIT_MAX}s")
         return False
 
-    def _wait_for_adsense_iframe(self, timeout=15):
-        """Wait for AdSense iframe to load and become visible (size > 50x50)."""
+    def _wait_for_adsense_iframe(self, timeout=30):
+        """Wait for AdSense iframe to load and become visible (size > 100x50)."""
         try:
             units = self.client.driver.find_elements(By.CSS_SELECTOR, 'ins.adsbygoogle')
             if not units:
+                self.logger.info("[ADSENSE] No ins.adsbygoogle units found")
                 return False
             start = time.time()
+            last_log = 0
             while time.time() - start < timeout:
                 for ins in units:
                     try:
                         if not self._safe_is_displayed(ins):
                             continue
-                        iframe = ins.find_element(By.TAG_NAME, 'iframe')
+                        try:
+                            iframe = ins.find_element(By.TAG_NAME, 'iframe')
+                        except NoSuchElementException:
+                            continue
                         if iframe and iframe.is_displayed():
                             size = iframe.size
-                            if size.get('width', 0) > 50 and size.get('height', 0) > 50:
+                            w, h = size.get('width', 0), size.get('height', 0)
+                            if w > 100 and h > 50:
                                 self.logger.info(
-                                    f"[ADSENSE] iframe loaded ({size['width']}x{size['height']})"
+                                    f"[ADSENSE] iframe loaded ({w}x{h}) after "
+                                    f"{int(time.time() - start)}s"
                                 )
                                 return True
-                    except NoSuchElementException:
-                        continue
+                            elif w > 0 and h > 0:
+                                if time.time() - last_log > 5:
+                                    self.logger.debug(
+                                        f"[ADSENSE] Small iframe: {w}x{h} (still loading)"
+                                    )
+                                    last_log = time.time()
                     except Exception:
                         continue
                 time.sleep(1.5)
-            self.logger.info(f"[ADSENSE] No iframe after {timeout}s")
+            self.logger.info(f"[ADSENSE] No usable iframe after {timeout}s")
             return False
         except Exception as e:
             self.logger.debug(f"[ADSENSE] Wait error: {e}")
@@ -593,7 +605,6 @@ class BrowserStackSpider(scrapy.Spider):
                     continue
                 time.sleep(random.uniform(2.0, 3.5))
 
-                # Get iframe
                 iframe = None
                 try:
                     iframe = ins.find_element(By.TAG_NAME, 'iframe')
@@ -613,7 +624,6 @@ class BrowserStackSpider(scrapy.Spider):
                     self.client.driver.switch_to.frame(iframe)
                     time.sleep(random.uniform(1.2, 2.5))
 
-                    # Google sometimes double-nests
                     try:
                         inner = self.client.driver.find_element(By.TAG_NAME, 'iframe')
                         self.client.driver.switch_to.frame(inner)
@@ -743,39 +753,85 @@ class BrowserStackSpider(scrapy.Spider):
         return False, None
 
     # ============================================================
-    # Internal link discovery
+    # Internal link discovery — Blogger-aware selectors
     # ============================================================
     def _pick_internal_link_url(self):
         """Pick an internal link URL without navigating."""
         try:
             target_domain = urlparse(self.target_url).netloc
-            selectors = [
-                'article a:not([href^="#"])',
-                'h2 a',
-                '.post-title a',
-                'a[rel="bookmark"]',
+
+            skip_substrings = [
+                '/tag/', '/label/', '/search', '/feed', '/archive',
+                'facebook.com', 'twitter.com', 'instagram.com',
+                'youtube.com', 'whatsapp', 't.me', 'telegram',
+                'mailto:', 'javascript:',
+                '.jpg', '.jpeg', '.png', '.gif', '.webp',
+                '.pdf', '.zip', '.css', '.js',
             ]
+
+            selectors = [
+                # Blogger article links
+                '.post-title a',
+                '.post h3 a',
+                'h2.post-title a',
+                'a.post-link',
+                # Blogger pager / archive
+                '.blog-pager a',
+                '.blog-pager-older-link',
+                '#BlogArchive1_ArchiveList a',
+                '.BlogArchive a',
+                # Blog homepage articles
+                'article h2 a',
+                'article .post-title a',
+                # Sidebar popular / featured
+                '.PopularPosts a',
+                '.FeaturedPost a',
+                '.widget-content a',
+                # Fallbacks
+                'article a[href]:not([href^="#"])',
+                'h3 a[href]:not([href^="#"])',
+                'a[href]:not([href^="#"])',
+            ]
+
+            candidates = []
+
             for selector in selectors:
                 try:
                     links = self.client.driver.find_elements(By.CSS_SELECTOR, selector)
                 except Exception:
                     continue
-                for link in links[:8]:
+                for link in links[:15]:
                     try:
                         href = link.get_attribute('href') or ''
-                        if not href or target_domain not in href:
+                        if not href:
+                            continue
+                        if target_domain not in href:
                             continue
                         if href in self._visited_urls:
                             continue
-                        # Skip obvious non-article links
-                        if any(x in href.lower() for x in
-                               ['/tag/', '/label/', '/search', '/feed',
-                                'facebook.com', 'twitter.com', '.jpg', '.png']):
+                        if any(s in href.lower() for s in skip_substrings):
                             continue
-                        self._visited_urls.add(href)
-                        return href
+                        path = urlparse(href).path
+                        if len(path) < 5 or path.strip('/') == '':
+                            continue
+                        candidates.append(href)
                     except Exception:
                         continue
+                if candidates:
+                    break
+
+            if candidates:
+                article_like = [
+                    c for c in candidates
+                    if '.html' in c or re.search(r'/\d{4}/', c)
+                ]
+                pool = article_like or candidates
+                chosen = pool[0]
+                self._visited_urls.add(chosen)
+                self.logger.info(f"[NAV] Picked internal: {chosen[:100]}")
+                return chosen
+
+            self.logger.info("[NAV] No internal links matched any selector")
         except Exception as e:
             self.logger.debug(f"Link pick error: {e}")
         return None
