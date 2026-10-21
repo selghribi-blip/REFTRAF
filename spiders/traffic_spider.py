@@ -15,14 +15,69 @@ class TrafficSpider(scrapy.Spider):
         },
     }
 
+    # ============================================================
+    # Pages we never crawl — they return 404 or have no ads.
+    # Normalized: lowercase, .html stripped, trailing / stripped.
+    # IMPORTANT: VPN landing page (/p/best-vpn-for-privacy-...) is
+    # NOT matched because the filter compares the full path.
+    # ============================================================
+    BORING_PATHS = {
+        '/privacy', '/privacy-policy', '/privacy-notice',
+        '/about', '/about-us',
+        '/contact', '/contact-us',
+        '/terms', '/terms-of-service', '/terms-and-conditions',
+        '/disclaimer', '/legal', '/cookie-policy', '/cookies', '/tos',
+        '/sitemap', '/sitemap.xml',
+        '/p/privacy', '/p/privacy-policy', '/p/privacy-policy.html',
+        '/p/about', '/p/about-us', '/p/about-us.html',
+        '/p/contact', '/p/contact-us', '/p/contact-us.html',
+        '/p/terms', '/p/terms-of-service', '/p/terms-of-service.html',
+        '/p/disclaimer', '/p/disclaimer.html',
+        '/p/sitemap', '/p/sitemap.html',
+    }
+
+    SKIP_SUBSTRINGS = (
+        '/tag/', '/label/', '/search', '/feed', '/archive',
+        'facebook.com', 'twitter.com', 'instagram.com',
+        'youtube.com', 'whatsapp', 't.me', 'telegram',
+        'mailto:', 'javascript:',
+        '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg',
+        '.pdf', '.zip', '.css', '.js', '.ico',
+    )
+
+    # ============================================================
+    # Ad selectors — covers AdSense, Adsterra, Monetag, and natives
+    # ============================================================
     AD_SELECTORS = [
-        'ins.adsbygoogle', 'iframe[id*="google_ads"]', 'iframe[src*="doubleclick"]',
-        'iframe[src*="googlesyndication"]', 'div[id^="ad-"]',
-        'div[class*="advertisement"]', 'div[class*="ads-"]',
-        'div[data-ad-slot]', 'div[data-ad-client]',
-        'a[href*="adsterra"]', 'a[href*="monetag"]', 'a[href*="propellerads"]',
-        'a[href*="mgid"]', 'a[href*="taboola"]', 'a[href*="outbrain"]',
+        # AdSense
+        'ins.adsbygoogle',
+        'iframe[id*="google_ads"]',
+        'iframe[src*="doubleclick"]',
+        'iframe[src*="googlesyndication"]',
+        # Generic ad divs
+        'div[id^="ad-"]',
+        'div[class*="advertisement"]',
+        'div[class*="ads-"]',
+        'div[data-ad-slot]',
+        'div[data-ad-client]',
         '.adsense', '.ad-banner', '[class*="banner-ad"]',
+        # Adsterra — direct links
+        'a[href*="adsterra"]',
+        'a[href*="adsterra.net"]',
+        'a[href*="adsterra.org"]',
+        # Adsterra — banner iframes (these are what the site actually uses)
+        'iframe[src*="highrevenueformat"]',
+        'iframe[src*="effectivecpmnetwork"]',
+        'iframe[src*="profitableratecpmnetwork"]',
+        'iframe[src*="highperformanceformat"]',
+        # Monetag
+        'a[href*="monetag"]',
+        'a[href*="propellerads"]',
+        'iframe[src*="quge5"]',
+        # Native networks
+        'a[href*="mgid"]',
+        'a[href*="taboola"]',
+        'a[href*="outbrain"]',
     ]
 
     FIELD_SELECTORS = {
@@ -41,6 +96,24 @@ class TrafficSpider(scrapy.Spider):
         self.forms_filled = 0
         self.proxy_used = None
 
+    # ============================================================
+    # Path filter
+    # ============================================================
+    def _is_boring_path(self, url):
+        """Return True if URL is a privacy/about/contact-style page."""
+        try:
+            path = urlparse(url).path.lower()
+            path = path.rstrip('/')
+            if path.endswith('.html'):
+                path = path[:-5]
+            path = path.rstrip('/')
+            return path in self.BORING_PATHS
+        except Exception:
+            return False
+
+    # ============================================================
+    # Entry
+    # ============================================================
     def start_requests(self):
         if not self.target_url.startswith(('http://', 'https://')):
             self.target_url = 'https://' + self.target_url
@@ -61,6 +134,9 @@ class TrafficSpider(scrapy.Spider):
             f"🏁 Closed ({reason}) | ads={self.ads_clicked} forms={self.forms_filled}"
         )
 
+    # ============================================================
+    # Parsers
+    # ============================================================
     def parse_main_page(self, response):
         self.visited_urls.add(self.target_url)
         self.proxy_used = response.meta.get('proxy', 'direct')
@@ -123,9 +199,13 @@ class TrafficSpider(scrapy.Spider):
     def handle_error(self, failure):
         self.logger.error(f"❌ {failure.request.url} | {failure.value}")
 
+    # ============================================================
+    # Ad extraction
+    # ============================================================
     def extract_and_click_ads(self, response):
         requests_ = []
         clicked = 0
+        seen_urls = set()
 
         for selector in self.AD_SELECTORS:
             for element in response.css(selector):
@@ -140,6 +220,9 @@ class TrafficSpider(scrapy.Spider):
                         continue
 
                     full_url = urljoin(response.url, ad_url)
+                    if full_url in seen_urls:
+                        continue
+                    seen_urls.add(full_url)
                     clicked += 1
 
                     requests_.append(scrapy.Request(
@@ -162,6 +245,9 @@ class TrafficSpider(scrapy.Spider):
 
         return requests_, clicked
 
+    # ============================================================
+    # Form extraction
+    # ============================================================
     def extract_and_fill_forms(self, response):
         requests_ = []
         filled = 0
@@ -220,28 +306,40 @@ class TrafficSpider(scrapy.Spider):
                 break
         return form_data
 
+    # ============================================================
+    # Internal links — FILTERED
+    # ============================================================
     def extract_internal_links(self, response):
         links = []
         base_domain = urlparse(self.target_url).netloc
-        skip_exts = ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.ico',
-                     '.pdf', '.css', '.js', '.svg')
 
         for href in response.css('a::attr(href)').getall():
             try:
                 full_url = urljoin(response.url, href)
                 parsed = urlparse(full_url)
+
                 if parsed.netloc != base_domain:
                     continue
                 if full_url in self.visited_urls:
                     continue
-                if full_url.endswith(skip_exts):
+
+                lower_url = full_url.lower()
+                if any(s in lower_url for s in self.SKIP_SUBSTRINGS):
                     continue
+
+                # NEW: skip privacy/about/contact pages
+                if self._is_boring_path(full_url):
+                    continue
+
                 links.append(full_url)
             except Exception:
                 continue
 
         return links
 
+    # ============================================================
+    # Helpers
+    # ============================================================
     def get_random_user_agent(self):
         agents = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
