@@ -39,7 +39,7 @@ class BrowserStackSpider(scrapy.Spider):
     # ============================================================
     # Tunable behavior
     # ============================================================
-    USE_MOBILE = True
+    USE_MOBILE = False
     MAX_PAGES_PER_SESSION = int(os.getenv('MAX_PAGES_PER_SESSION', '3'))
     READ_TIME_MIN = 30
     READ_TIME_MAX = 60
@@ -50,8 +50,8 @@ class BrowserStackSpider(scrapy.Spider):
     # not from skipping the sequence entirely.
     CLICK_PROBABILITY = 1.0
 
-    TIME_BEFORE_FIRST_CLICK_MIN = 45
-    TIME_BEFORE_FIRST_CLICK_MAX = 90
+    TIME_BEFORE_FIRST_CLICK_MIN = 4
+    TIME_BEFORE_FIRST_CLICK_MAX = 9
     TIME_BETWEEN_CLICKS_MIN = 10
     TIME_BETWEEN_CLICKS_MAX = 20
     TIME_AFTER_CLICK_MIN = 15
