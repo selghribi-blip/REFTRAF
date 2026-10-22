@@ -2,7 +2,7 @@ name: Traffic Bot Runner
 
 on:
   schedule:
-    - cron: '0 */2 * * *'
+    - cron: '0 */6 * * *'   # every 6 hours — human-like
   workflow_dispatch:
     inputs:
       target_url:
@@ -12,7 +12,7 @@ on:
       run_mode:
         description: 'Run mode'
         required: false
-        default: 'both'
+        default: 'local'
         type: choice
         options: [both, scrapy, browserstack, local, export]
 
@@ -21,37 +21,26 @@ permissions:
   contents: read
 
 jobs:
-  # ============================================================
-  # 1) SCRAPY SPIDER
-  # ============================================================
   run-scrapy-spider:
-    name: Scrapy #${{ matrix.attempt }}
+    name: Scrapy
     if: |
       github.event_name == 'schedule' ||
       github.event.inputs.run_mode == 'both' ||
       github.event.inputs.run_mode == 'scrapy'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      matrix:
-        attempt: [1, 2]
-      fail-fast: false
-      max-parallel: 2
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-
       - name: Install Python deps
         run: |
           pip install --upgrade pip
           pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
           pip install --no-cache-dir -r requirements.txt
-
-      - name: Run Scrapy (with fail-fast on log errors)
+      - name: Run Scrapy (fail-fast on log errors)
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
@@ -63,240 +52,113 @@ jobs:
           set -o pipefail
           scrapy crawl traffic_bot \
             -a target_url="${TARGET_URL}" \
-            -O scrapy_results_${{ matrix.attempt }}.json \
+            -O scrapy_results.json \
             -L INFO 2>&1 | tee scrapy.log
-
           if grep -qE "Traceback|CRITICAL" scrapy.log; then
             echo "❌ Scrapy reported a fatal error"
             exit 1
           fi
-          if [ ! -s scrapy_results_${{ matrix.attempt }}.json ]; then
+          if [ ! -s scrapy_results.json ]; then
             echo "❌ No output produced"
             exit 1
           fi
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: scrapy-results-${{ matrix.attempt }}
-          path: scrapy_results_${{ matrix.attempt }}.json
+          name: scrapy-results
+          path: scrapy_results.json
           if-no-files-found: ignore
           retention-days: 3
 
-  # ============================================================
-  # 2) LOCAL CHROME (setup-chrome with clean version matching)
-  # ============================================================
   run-local-browser-spider:
-    name: Local #${{ matrix.attempt }}
+    name: Local Monetag-First
     if: |
       github.event_name == 'schedule' ||
       github.event.inputs.run_mode == 'both' ||
       github.event.inputs.run_mode == 'local'
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    strategy:
-      matrix:
-        attempt: [1, 2]
-      fail-fast: false
-      max-parallel: 1
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-
-      # ------------------------------------------------------------
-      # 1) إزالة أي نسخة قديمة من Chrome/ChromeDriver
-      #    (صور GitHub Actions تحتوي نسخة 155 مثبتة مسبقاً)
-      # ------------------------------------------------------------
-      - name: Remove pre-installed Chrome and ChromeDriver
+      - name: Remove pre-installed Chrome
         run: |
           sudo apt-get remove -y google-chrome-stable 2>/dev/null || true
           sudo rm -f /usr/bin/google-chrome /usr/bin/google-chrome-stable
           sudo rm -f /usr/bin/chromedriver /usr/local/bin/chromedriver
           sudo rm -rf /opt/google/chrome
           echo "Old Chrome/ChromeDriver removed (if any)"
-
-      # ------------------------------------------------------------
-      # 2) تثبيت Chrome + ChromeDriver متطابقين
-      # ------------------------------------------------------------
-      - name: Setup Chrome (stable) with matching ChromeDriver
+      - name: Setup Chrome with matching ChromeDriver
         id: setup-chrome
         uses: browser-actions/setup-chrome@v2
         with:
           chrome-version: 'stable'
           install-chromedriver: 'true'
           install-dependencies: 'true'
-
-      # ------------------------------------------------------------
-      # 3) التحقق من التطابق + تصدير المسارات
-      # ------------------------------------------------------------
-      - name: Verify Chrome/ChromeDriver versions match
+      - name: Verify versions match
         run: |
           set -e
           CHROME_PATH="${{ steps.setup-chrome.outputs.chrome-path }}"
           DRIVER_PATH=$(which chromedriver)
-
-          echo "Chrome path from setup-chrome: $CHROME_PATH"
-          echo "ChromeDriver path: $DRIVER_PATH"
-
           CHROME_VERSION=$("$CHROME_PATH" --version | grep -oP '\d+\.\d+\.\d+\.\d+')
           DRIVER_VERSION=$("$DRIVER_PATH" --version | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1)
-
-          echo "Chrome:        $CHROME_VERSION"
-          echo "ChromeDriver:  $DRIVER_VERSION"
-
+          echo "Chrome: $CHROME_VERSION | Driver: $DRIVER_VERSION"
           CHROME_MAJOR=$(echo $CHROME_VERSION | cut -d. -f1)
           DRIVER_MAJOR=$(echo $DRIVER_VERSION | cut -d. -f1)
-
           if [ "$CHROME_MAJOR" != "$DRIVER_MAJOR" ]; then
-            echo "❌ MISMATCH: Chrome=$CHROME_MAJOR vs Driver=$DRIVER_MAJOR"
+            echo "❌ MISMATCH"
             exit 1
           fi
-
           echo "✅ Versions match"
           echo "CHROME_BIN=$CHROME_PATH" >> $GITHUB_ENV
           echo "CHROMEDRIVER_PATH=$DRIVER_PATH" >> $GITHUB_ENV
-
-      # ------------------------------------------------------------
-      # 4) مكتبات النظام + xvfb
-      # ------------------------------------------------------------
       - name: Install xvfb and system libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb libnss3 libgbm1
-          sudo apt-get install -y libasound2t64 2>/dev/null || \
-            sudo apt-get install -y libasound2
-
-      # ------------------------------------------------------------
-      # 5) Cache uc binaries
-      # ------------------------------------------------------------
-      - name: Cache undetected-chromedriver binaries
+          sudo apt-get install -y libasound2t64 2>/dev/null || sudo apt-get install -y libasound2
+      - name: Cache uc-chromedriver
         uses: actions/cache@v4
         with:
           path: ~/.local/share/undetected_chromedriver
           key: uc-chromedriver-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
           restore-keys: |
             uc-chromedriver-${{ runner.os }}-
-
-      # ------------------------------------------------------------
-      # 6) تثبيت تبعيات Python
-      # ------------------------------------------------------------
       - name: Install Python deps
         run: |
           pip install --upgrade pip
           pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
           pip install --no-cache-dir -r requirements.txt
-
-      # ------------------------------------------------------------
-      # 7) تشغيل العنكبوت تحت xvfb (بدون --headless=new)
-      # ------------------------------------------------------------
-      - name: Run Local
+      - name: Run Local (Monetag-First)
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
           USE_PROXY_WITH_BROWSER: 'true'
           PROXY_HEALTHCHECK: 'true'
           MANUAL_PROXY_FILE: 'manual_proxies.txt'
+          MAX_ADS_PER_SESSION: '3'
+          MAX_PAGES_PER_SESSION: '3'
           DISPLAY_MODE: 'xvfb'
         run: |
           xvfb-run -a scrapy crawl browserstack_bot \
             -a target_url="${TARGET_URL}" \
             -a use_browserstack="false" \
-            -O local_results_${{ matrix.attempt }}.json \
+            -O local_results.json \
             -L INFO
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: local-results-${{ matrix.attempt }}
-          path: local_results_${{ matrix.attempt }}.json
+          name: local-results
+          path: local_results.json
           if-no-files-found: ignore
           retention-days: 3
 
-  # ============================================================
-  # 3) BROWSERSTACK
-  # ============================================================
-  run-browserstack-spider:
-    name: BrowserStack
-    if: |
-      github.event_name == 'schedule' ||
-      github.event.inputs.run_mode == 'both' ||
-      github.event.inputs.run_mode == 'browserstack'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install Python deps
-        run: |
-          pip install --upgrade pip
-          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
-          pip install --no-cache-dir -r requirements.txt
-
-      - name: Run BrowserStack
-        env:
-          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
-          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
-          MONGODB_URI: ${{ secrets.MONGODB_URI }}
-          TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
-        run: |
-          scrapy crawl browserstack_bot \
-            -a target_url="${TARGET_URL}" \
-            -a use_browserstack="true" \
-            -O browserstack_results.json \
-            -L INFO
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: browserstack-results
-          path: browserstack_results.json
-          if-no-files-found: ignore
-          retention-days: 3
-
-  # ============================================================
-  # 4) EXPORT DATA
-  # ============================================================
-  export-data:
-    name: Export Data
-    if: github.event.inputs.run_mode == 'export'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: pip install pymongo pandas openpyxl
-      - name: Export
-        env:
-          MONGODB_URI: ${{ secrets.MONGODB_URI }}
-          EXPORT_DAYS: '7'
-          EXPORT_DIR: './exports'
-        run: python scripts/export_mongo.py
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: mongo-exports
-          path: exports/
-          retention-days: 30
-          if-no-files-found: ignore
-
-  # ============================================================
-  # 5) AGGREGATE
-  # ============================================================
   aggregate-results:
     name: Aggregate
-    needs: [run-scrapy-spider, run-local-browser-spider, run-browserstack-spider]
+    needs: [run-scrapy-spider, run-local-browser-spider]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -304,17 +166,13 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Aggregate
         run: |
           echo "=== TRAFFIC BOT RUN SUMMARY ==="
           echo "Run: ${{ github.run_number }} | Trigger: ${{ github.event_name }}"
-          echo ""
-
           total=$(python3 - <<'PYEOF'
           import json, glob
           total = 0
@@ -332,9 +190,6 @@ jobs:
           )
           echo "TOTAL ITEMS: $total"
 
-  # ============================================================
-  # 6) CLEANUP
-  # ============================================================
   cleanup:
     name: Cleanup
     runs-on: ubuntu-latest
