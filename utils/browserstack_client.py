@@ -1,7 +1,7 @@
 # utils/browserstack_client.py
 # BrowserStack + Local Chrome with auto Chrome version detection,
 # real proxy verification (MV3 auth), click verification, anti-detection,
-# and mobile emulation.
+# and mobile emulation. Monetag-first classification.
 # ==========================================================================
 import os
 import re
@@ -42,12 +42,25 @@ AZURE_DATACENTER_KEYWORDS = (
     'amazon', 'aws', 'google cloud', 'digitalocean',
 )
 
-# Revenue network keyword map — used by verify_click_result.
-# Ordered by specificity: affiliate destinations first, then ad networks.
+# Revenue network keyword map — Monetag-first.
+# Ordered by specificity: exact Monetag domains first, then broad patterns.
 REVENUE_NETWORKS = {
-    # ----- Affiliate destinations (Monetag/Adsterra popunder targets) -----
-    # The `strategy` field on each verification tells us which network served
-    # the click (container=Monetag, adsterra_link=Adsterra, etc.).
+    # ----- Monetag / PropellerAds (the primary revenue source) -----
+    'monetag': [
+        # Redirect-chain domains (verified from logs)
+        'nn125.com', 'nn68.com', 'nnmnn.com', 'link2nn',
+        'omg10.com', 'uplcm.com',
+        # Monetag-owned infrastructure
+        'monetag.com', 'quge5.com', 'quge5.net',
+        'effectivecpmnetwork', 'highperformanceformat',
+        'highrevenueformat', 'profitableratecpmnetwork',
+        'propellerads.com', 'propeller-ads.com',
+        'onclickalgo', 'onclickmega', 'onclckds',
+        'mndly.com', 'mndl.net',
+        # Common Monetag Smartlink redirect patterns
+        'link-to-nn', 'smartlink', 'directlink',
+    ],
+    # ----- Affiliate destinations (Monetag popunder targets) -----
     'affiliate_offer': [
         'aliexpress.com', 'alibaba.com', 'temu.com', 'shein.com',
         'banggood.com', 'dhgate.com', 'wish.com', 'lightinthebox',
@@ -65,16 +78,7 @@ REVENUE_NETWORKS = {
         'tinder', 'badoo', 'chaturbate', 'onlyfans',
         'adultfriendfinder', 'ashleymadison', 'flirt',
     ],
-    # ----- Monetag / PropellerAds -----
-    'monetag': [
-        'effectivecpmnetwork', 'highperformanceformat',
-        'highrevenueformat', 'profitableratecpmnetwork',
-        'quge5.com', 'monetag.com', 'propellerads.com',
-        'propeller-ads.com', 'onclickalgo', 'onclickmega', 'onclckds',
-        'nn125.com', 'nn68.com', 'nnmnn.com',
-        'link2nn', 'link-to-nn',
-    ],
-    # ----- Adsterra -----
+    # ----- Adsterra (fallback, usually yields google.com) -----
     'adsterra': [
         'adsterra.com', 'adsterra.net', 'adsterra.org',
         'www.adsterra.com', 'pixel.adsterra.com',
@@ -94,6 +98,8 @@ REVENUE_NETWORKS = {
     # ----- Other -----
     'media_net': ['media.net', 'media-net'],
     'ezoic': ['ezoic.com', 'ezojs.com', 'ezoic.net'],
+    # ----- Known dummy/bot-detection redirects (NOT revenue) -----
+    'bot_detected': ['google.com/', 'about:blank', 'google.co/'],
 }
 
 
@@ -156,7 +162,6 @@ ANDROID_DEVICES = [
 # Chrome Version Detection
 # ============================================================
 def detect_chrome_version():
-    """Auto-detect installed Chrome major version."""
     candidates = [
         os.environ.get('CHROME_BIN', ''),
         '/opt/hostedtoolcache/setup-chrome/chrome/stable/x64/chrome',
@@ -188,7 +193,6 @@ def detect_chrome_version():
 # Proxy Auth Extension (Manifest V3)
 # ============================================================
 def parse_proxy_url(proxy_url):
-    """Parse http://user:pass@host:port or socks5://user:pass@host:port."""
     if not proxy_url:
         return None
     try:
@@ -196,18 +200,15 @@ def parse_proxy_url(proxy_url):
         url = proxy_url.strip()
         if '://' in url:
             scheme, url = url.split('://', 1)
-
         user = pass_ = None
         if '@' in url:
             creds, url = url.rsplit('@', 1)
             if ':' in creds:
                 user, pass_ = creds.split(':', 1)
-
         if ':' in url:
             host, port = url.rsplit(':', 1)
         else:
             return None
-
         return {'scheme': scheme, 'host': host, 'port': port,
                 'user': user, 'pass': pass_}
     except Exception as e:
@@ -216,29 +217,17 @@ def parse_proxy_url(proxy_url):
 
 
 def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, scheme='http'):
-    """
-    Create a Chrome extension (manifest v3) that sets the proxy and injects
-    auth credentials. Returns the path to the UNPACKED extension directory.
-    """
     manifest_json = """
     {
         "version": "1.0.0",
         "manifest_version": 3,
         "name": "Chrome Proxy Auth",
-        "permissions": [
-            "proxy",
-            "storage",
-            "webRequest",
-            "webRequestAuthProvider"
-        ],
+        "permissions": ["proxy", "storage", "webRequest", "webRequestAuthProvider"],
         "host_permissions": ["<all_urls>"],
-        "background": {
-            "service_worker": "background.js"
-        },
+        "background": {"service_worker": "background.js"},
         "minimum_chrome_version": "120.0.0"
     }
     """
-
     background_js = """
     const config = {
         mode: "fixed_servers",
@@ -248,15 +237,9 @@ def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, 
         }
     };
     chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
-
     chrome.webRequest.onAuthRequired.addListener(
         function(details, callback) {
-            callback({
-                authCredentials: {
-                    username: "%s",
-                    password: "%s"
-                }
-            });
+            callback({authCredentials: {username: "%s", password: "%s"}});
         },
         {urls: ["<all_urls>"]},
         ['asyncBlocking']
@@ -266,12 +249,10 @@ def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, 
     ext_dir = tempfile.mkdtemp(prefix='proxy_auth_ext_')
     manifest_path = os.path.join(ext_dir, 'manifest.json')
     background_path = os.path.join(ext_dir, 'background.js')
-
     with open(manifest_path, 'w') as f:
         f.write(manifest_json)
     with open(background_path, 'w') as f:
         f.write(background_js)
-
     logger.info(f"Created proxy auth extension (MV3) at: {ext_dir}")
     return ext_dir
 
@@ -455,7 +436,7 @@ class ResourceBlocker:
 
 
 # ============================================================
-# BrowserStack Client (cloud) + Click verification helpers
+# BrowserStack Client (cloud) + Click verification
 # ============================================================
 class BrowserStackClient:
     AD_SELECTORS = [
@@ -469,6 +450,9 @@ class BrowserStackClient:
         'a[href*="highperformanceformat"]',
         'a[href*="highrevenueformat"]',
         'a[href*="profitableratecpmnetwork"]',
+        'a[href*="nn125"]',
+        'a[href*="omg10"]',
+        'a[href*="uplcm"]',
         'div[id^="container-"]',
         'div[id^="ad-"]',
         'div[class*="advertisement"]',
@@ -545,13 +529,15 @@ class BrowserStackClient:
             'max_touch_points': 0,
         }
 
-    # ---------- Click verification ----------
     @staticmethod
     def _identify_network(domain):
         """Map a destination domain to an ad network name."""
         if not domain:
             return None
         d = domain.lower()
+        # Special case: bare google.com as the destination = bot-detection dummy
+        if d == 'www.google.com' or d == 'google.com':
+            return 'bot_detected'
         for network, keywords in REVENUE_NETWORKS.items():
             if any(kw in d for kw in keywords):
                 return network
@@ -564,8 +550,7 @@ class BrowserStackClient:
           - What's the destination URL / domain?
           - Which revenue network was reached?
           - What HTTP status?
-        Leaves any new tab OPEN (caller closes it after post_wait
-        so ad networks can register the click).
+        Leaves any new tab OPEN (caller closes it after post_wait).
         """
         result = {
             'new_tab': False,
@@ -573,6 +558,7 @@ class BrowserStackClient:
             'destination_domain': None,
             'http_status': None,
             'revenue_network': None,
+            'is_bot_dummy': False,
         }
 
         start = time.time()
@@ -599,6 +585,8 @@ class BrowserStackClient:
                 parsed = urlparse(result['destination_url'])
                 result['destination_domain'] = parsed.netloc
                 result['revenue_network'] = self._identify_network(parsed.netloc)
+                if result['revenue_network'] == 'bot_detected':
+                    result['is_bot_dummy'] = True
 
                 try:
                     status = self.driver.execute_script(
@@ -884,11 +872,7 @@ class LocalBrowserClient(BrowserStackClient):
         self._profile_dir = None
         self._extension_path = None
 
-    # ------------------------------------------------------------
-    # Proxy verification helpers
-    # ------------------------------------------------------------
     def _get_public_ip(self):
-        """Return the browser's public IP via multiple fallback services."""
         services = [
             'https://api.ipify.org?format=json',
             'https://ipinfo.io/json',
@@ -914,7 +898,6 @@ class LocalBrowserClient(BrowserStackClient):
         return None
 
     def _verify_proxy_effective(self, proxy_url):
-        """Verify that the browser is truly going through the proxy."""
         if self.driver is None:
             logger.error("[PROXY-CHECK] Driver is None")
             return False
@@ -964,9 +947,6 @@ class LocalBrowserClient(BrowserStackClient):
         logger.info(f"✅ Proxy effective: {country} via {isp[:40]}")
         return True
 
-    # ------------------------------------------------------------
-    # Session startup
-    # ------------------------------------------------------------
     def start_session(self, url, headless=True, proxy=None, fp=None,
                       block_resources='balanced', mobile=True):
         fp = fp or self._random_fp(mobile=mobile)
