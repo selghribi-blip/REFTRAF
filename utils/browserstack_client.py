@@ -71,6 +71,8 @@ REVENUE_NETWORKS = {
         'highrevenueformat', 'profitableratecpmnetwork',
         'quge5.com', 'monetag.com', 'propellerads.com',
         'propeller-ads.com', 'onclickalgo', 'onclickmega', 'onclckds',
+        'nn125.com', 'nn68.com', 'nnmnn.com',
+        'link2nn', 'link-to-nn',
     ],
     # ----- Adsterra -----
     'adsterra': [
