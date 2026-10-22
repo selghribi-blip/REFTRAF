@@ -50,8 +50,8 @@ class BrowserStackSpider(scrapy.Spider):
     # not from skipping the sequence entirely.
     CLICK_PROBABILITY = 1.0
 
-    TIME_BEFORE_FIRST_CLICK_MIN = 4
-    TIME_BEFORE_FIRST_CLICK_MAX = 9
+    TIME_BEFORE_FIRST_CLICK_MIN = 75
+    TIME_BEFORE_FIRST_CLICK_MAX = 135
     TIME_BETWEEN_CLICKS_MIN = 10
     TIME_BETWEEN_CLICKS_MAX = 20
     TIME_AFTER_CLICK_MIN = 15
