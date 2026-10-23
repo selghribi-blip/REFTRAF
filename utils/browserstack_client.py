@@ -1,7 +1,7 @@
 # utils/browserstack_client.py
 # BrowserStack + Local Chrome with auto Chrome version detection,
 # real proxy verification (MV3 auth), click verification, anti-detection,
-# and mobile emulation. Monetag-first classification.
+# mobile emulation, and Monetag-first classification.
 # ==========================================================================
 import os
 import re
@@ -43,21 +43,17 @@ AZURE_DATACENTER_KEYWORDS = (
 )
 
 # Revenue network keyword map — Monetag-first.
-# Ordered by specificity: exact Monetag domains first, then broad patterns.
 REVENUE_NETWORKS = {
-    # ----- Monetag / PropellerAds (the primary revenue source) -----
+    # ----- Monetag / PropellerAds (primary revenue) -----
     'monetag': [
-        # Redirect-chain domains (verified from logs)
         'nn125.com', 'nn68.com', 'nnmnn.com', 'link2nn',
         'omg10.com', 'uplcm.com',
-        # Monetag-owned infrastructure
         'monetag.com', 'quge5.com', 'quge5.net',
         'effectivecpmnetwork', 'highperformanceformat',
         'highrevenueformat', 'profitableratecpmnetwork',
         'propellerads.com', 'propeller-ads.com',
         'onclickalgo', 'onclickmega', 'onclckds',
         'mndly.com', 'mndl.net',
-        # Common Monetag Smartlink redirect patterns
         'link-to-nn', 'smartlink', 'directlink',
     ],
     # ----- Affiliate destinations (Monetag popunder targets) -----
@@ -68,17 +64,17 @@ REVENUE_NETWORKS = {
         'amazon.it', 'amazon.es', 'ebay.com', 'allegro.pl',
         'gearbest.com', 'tomtop.com',
     ],
-    # ----- Gambling / betting (Monetag often serves these) -----
+    # ----- Gambling / betting -----
     'gambling': [
         '1xbet', 'bet365', 'betway', 'melbet', 'pin-up',
         'mostbet', 'vulkan', 'betwinner', '22bet', 'parimatch',
     ],
-    # ----- Dating / adult (Adsterra targets) -----
+    # ----- Dating / adult -----
     'dating': [
         'tinder', 'badoo', 'chaturbate', 'onlyfans',
         'adultfriendfinder', 'ashleymadison', 'flirt',
     ],
-    # ----- Adsterra (fallback, usually yields google.com) -----
+    # ----- Adsterra (fallback) -----
     'adsterra': [
         'adsterra.com', 'adsterra.net', 'adsterra.org',
         'www.adsterra.com', 'pixel.adsterra.com',
@@ -98,7 +94,7 @@ REVENUE_NETWORKS = {
     # ----- Other -----
     'media_net': ['media.net', 'media-net'],
     'ezoic': ['ezoic.com', 'ezojs.com', 'ezoic.net'],
-    # ----- Known dummy/bot-detection redirects (NOT revenue) -----
+    # ----- Known bot-detection dummy redirects (NOT revenue) -----
     'bot_detected': ['google.com/', 'about:blank', 'google.co/'],
 }
 
@@ -535,7 +531,6 @@ class BrowserStackClient:
         if not domain:
             return None
         d = domain.lower()
-        # Special case: bare google.com as the destination = bot-detection dummy
         if d == 'www.google.com' or d == 'google.com':
             return 'bot_detected'
         for network, keywords in REVENUE_NETWORKS.items():
@@ -544,14 +539,7 @@ class BrowserStackClient:
         return 'unknown'
 
     def verify_click_result(self, pre_handles, pre_url, timeout=8):
-        """
-        After a click, check:
-          - Was a new tab opened?
-          - What's the destination URL / domain?
-          - Which revenue network was reached?
-          - What HTTP status?
-        Leaves any new tab OPEN (caller closes it after post_wait).
-        """
+        """After a click, check: new tab? destination? network? HTTP status?"""
         result = {
             'new_tab': False,
             'destination_url': None,
@@ -872,29 +860,84 @@ class LocalBrowserClient(BrowserStackClient):
         self._profile_dir = None
         self._extension_path = None
 
-    def _get_public_ip(self):
-        services = [
-            'https://api.ipify.org?format=json',
-            'https://ipinfo.io/json',
-        ]
-        for url in services:
-            try:
-                self.driver.get(url)
-                time.sleep(1.0)
-                body = self.driver.find_element(By.TAG_NAME, 'body').text.strip()
-                if not body:
-                    continue
+    # ------------------------------------------------------------
+    # Fast proxy pre-flight (HTTP check before browser launch)
+    # ------------------------------------------------------------
+    def _preflight_proxy_check(self, proxy_url, timeout=15):
+        """
+        Verify the proxy responds via plain HTTP (no browser).
+        Fails in ≤15s instead of 50s of browser timeouts.
+        """
+        try:
+            proxies = {'http': proxy_url, 'https': proxy_url}
+            for test_url in (
+                'https://api.ipify.org?format=json',
+                'https://httpbin.org/ip',
+            ):
                 try:
-                    data = json.loads(body)
-                    ip = (data.get('ip') or data.get('IP') or '').strip()
-                    if ip:
-                        return ip
-                except json.JSONDecodeError:
-                    if body.count('.') == 3:
+                    r = requests.get(
+                        test_url, proxies=proxies, timeout=timeout,
+                    )
+                    if r.status_code == 200:
+                        body = r.text[:120]
+                        logger.info(f"[PREFLIGHT] ✅ Proxy OK via {test_url}: {body}")
+                        return True
+                except Exception as e:
+                    logger.debug(f"[PREFLIGHT] {test_url} failed: {type(e).__name__}")
+                    continue
+            logger.error("[PREFLIGHT] ❌ Proxy failed both health checks")
+        except Exception as e:
+            logger.error(f"[PREFLIGHT] Proxy check crashed: {e}")
+        return False
+
+    # ------------------------------------------------------------
+    # Browser-based IP check (fallback, called after preflight passes)
+    # ------------------------------------------------------------
+    def _get_public_ip(self):
+        """Return public IP via multiple services with short timeouts (max 15s)."""
+        services = [
+            ('https://api.ipify.org?format=json', 'ip'),
+            ('https://ipinfo.io/json', 'ip'),
+            ('https://ifconfig.me/ip', None),  # plain text
+        ]
+        original_timeout = None
+        try:
+            original_timeout = 25
+            self.driver.set_page_load_timeout(5)
+        except Exception:
+            pass
+
+        try:
+            for url, key in services:
+                try:
+                    logger.info(f"[IP-CHECK] Trying {url}")
+                    self.driver.get(url)
+                    time.sleep(0.8)
+                    body = self.driver.find_element(By.TAG_NAME, 'body').text.strip()
+                    if not body:
+                        continue
+
+                    if key:
+                        try:
+                            data = json.loads(body)
+                            ip = (data.get(key) or data.get('origin') or '').strip()
+                            if ip and '.' in ip:
+                                return ip.split(',')[0].strip()
+                        except json.JSONDecodeError:
+                            pass
+
+                    # Plain text fallback
+                    if body.count('.') == 3 or body.count(':') >= 2:
                         return body.split()[0].strip()
-            except Exception as e:
-                logger.debug(f"IP service {url} failed: {e}")
-                continue
+                except Exception as e:
+                    logger.warning(f"[IP-CHECK] {url} failed: {type(e).__name__}")
+                    continue
+        finally:
+            if original_timeout:
+                try:
+                    self.driver.set_page_load_timeout(original_timeout)
+                except Exception:
+                    pass
         return None
 
     def _verify_proxy_effective(self, proxy_url):
@@ -951,6 +994,16 @@ class LocalBrowserClient(BrowserStackClient):
                       block_resources='balanced', mobile=True):
         fp = fp or self._random_fp(mobile=mobile)
         self.is_mobile = fp.get('is_mobile', False)
+
+        # ---- PRE-FLIGHT: fail fast if proxy is down (≤15s) ----
+        if proxy:
+            logger.info("[PREFLIGHT] Verifying proxy health before Chrome launch...")
+            if not self._preflight_proxy_check(proxy, timeout=15):
+                raise RuntimeError(
+                    "Proxy failed pre-flight check — likely down or blocked. "
+                    "Aborting before wasting Actions minutes."
+                )
+            logger.info("[PREFLIGHT] ✅ Proxy is reachable, proceeding to browser")
 
         options = Options()
         vw, vh = fp.get('viewport', (412, 915))
@@ -1038,6 +1091,13 @@ class LocalBrowserClient(BrowserStackClient):
                         f'--proxy-server={scheme}://{host}:{port}'
                     )
                     logger.info(f"Proxy without auth: {scheme}://{host}:{port}")
+
+        # ---- FORCE uc.Chrome to use the setup-chrome binary ----
+        # Prevents the stale uc cache from loading an old Chrome 155
+        chrome_bin = os.environ.get('CHROME_BIN', '')
+        if chrome_bin and os.path.exists(chrome_bin):
+            options.binary_location = chrome_bin
+            logger.info(f"[UC] Forced binary_location: {chrome_bin}")
 
         # Driver creation
         driver = None
